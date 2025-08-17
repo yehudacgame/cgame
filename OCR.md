@@ -6,10 +6,10 @@ CGame’s ReplayKit upload extension performs on-device OCR to detect kill event
 ### Key Files
 - `CGameExtension/SampleHandler.swift`
   - Orientation, OCR sampling, ROI use, OCR request config, kill detection + cooldown, notifications, vibration, and debug image saving.
+- `CGameExtension/Buffer/SessionBuffer.swift`
+  - Continuous recording and kill event collection. Creates trimmed kill clips at the end of the session (10s total: 5s pre + 5s post, clamped to asset duration) with COD rotation fix.
 - `CGameExtension/ExtensionDetectionConfig.swift`
   - Central place to configure the normalized ROI for OCR.
-- `CGameExtension/Buffer/SessionBuffer.swift`
-  - Continuous recording and kill event collection. Creates trimmed kill clips at the end of the session.
 
 ### Orientation
 - COD is always played landscape. ReplayKit provides a portrait buffer.
@@ -37,7 +37,7 @@ CGame’s ReplayKit upload extension performs on-device OCR to detect kill event
 
 ### Recording & Clips
 - `SessionBuffer` records the full session and captures all kill timestamps.
-- On `broadcastFinished`, it trims clips for each kill with a small pre/post roll and applies COD’s rotation fix to the exported video.
+- On `broadcastFinished`, it trims a 10-second clip per kill (5s before, 5s after). Start/end are clamped to the asset duration. COD rotation fix is applied to exports.
 
 ### Notifications & Vibration
 - On kill detection, the extension fires a local notification with sound and time‑sensitive interruption level (iOS 15+), and triggers device vibration.
@@ -56,6 +56,7 @@ CGame’s ReplayKit upload extension performs on-device OCR to detect kill event
 - Language/lexicon: `recognitionLanguages`, `customWords` in `SampleHandler.swift`
 - Minimum text size: `minimumTextHeight` in `SampleHandler.swift`
 - Debug preprocessing: `debugPreprocessingEnabled` in `SampleHandler.swift` (false by default)
+- Clip pre/post roll: `preRoll`, `postRoll` in `SessionBuffer.createKillClip`
 
 ### Resilience Notes
 - ROI is percentage-based and widened by ~10% to handle device aspect ratio and HUD shifts.
@@ -75,4 +76,5 @@ CGame’s ReplayKit upload extension performs on-device OCR to detect kill event
 - OCR: `.accurate`, `en-US`, min height 0.01, custom words for COD
 - Cooldown: 2.5s
 - Notification: time‑sensitive + sound; vibration enabled
+- Clip length: 10s (5s pre + 5s post), clamped
 - Debug preprocessing: disabled by default; raw crop used for OCR

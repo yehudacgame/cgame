@@ -1,6 +1,29 @@
 import Foundation
 import AVFoundation
 import CoreMedia
+import CoreGraphics
+
+// Minimal App Group helper local to the extension target
+private struct ExtAppGroupSession {
+	static let shared = ExtAppGroupSession()
+	private let appGroupIdentifier = "group.com.cgame.shared"
+
+	func saveSessionInfo(sessionURL: URL, killTimestamps: [(Date, Double, String)]) {
+		guard let defaults = UserDefaults(suiteName: appGroupIdentifier) else {
+			NSLog("❌ ExtAppGroupSession: Failed to access App Groups")
+			return
+		}
+		let timestamps = killTimestamps.map { $0.0.timeIntervalSince1970 }
+		let cmTimes = killTimestamps.map { $0.1 }
+		let eventTypes = killTimestamps.map { $0.2 }
+		defaults.set(sessionURL.path, forKey: "pending_session_url")
+		defaults.set(timestamps, forKey: "pending_kill_timestamps")
+		defaults.set(cmTimes, forKey: "pending_kill_cmtimes")
+		defaults.set(eventTypes, forKey: "pending_kill_events")
+		defaults.set(Date().timeIntervalSince1970, forKey: "session_updated_at")
+		NSLog("📊 ExtAppGroupSession: Saved session info with \(killTimestamps.count) kills")
+	}
+}
 
 /// Simple session-based recording that captures entire gameplay to a single file
 /// Tracks kill timestamps for end-of-session batch processing
@@ -76,6 +99,12 @@ class SessionBuffer {
             
             NSLog("🎯 SessionBuffer: Recorded kill #\(self.killEvents.count) at CMTime: \(String(format: "%.3f", cmTime.seconds))s")
             NSLog("📊 SessionBuffer: Total kills in session: \(self.killEvents.count)")
+            
+            // Persist updated session info so the main app knows about the session file
+            let killTriples: [(Date, Double, String)] = self.killEvents.map { evt in
+                (evt.timestamp, evt.cmTime.seconds, evt.eventType)
+            }
+            ExtAppGroupSession.shared.saveSessionInfo(sessionURL: self.sessionURL, killTimestamps: killTriples)
         }
     }
     
@@ -88,6 +117,12 @@ class SessionBuffer {
             
             NSLog("🏁 SessionBuffer: Ending session with \(self.killEvents.count) kills")
             
+            // Persist latest session info immediately before finalizing
+            let preFinalizeTriples: [(Date, Double, String)] = self.killEvents.map { evt in
+                (evt.timestamp, evt.cmTime.seconds, evt.eventType)
+            }
+            ExtAppGroupSession.shared.saveSessionInfo(sessionURL: self.sessionURL, killTimestamps: preFinalizeTriples)
+            
             // Finalize recording
             self.finalizeRecording { [weak self] in
                 guard let self = self else {
@@ -95,8 +130,15 @@ class SessionBuffer {
                     return
                 }
                 
-                // Process all kills
-                self.processKillClips(completion: completion)
+                // NEW: Persist session + kill metadata for main app to trim without re-encoding
+                let killTriples: [(Date, Double, String)] = self.killEvents.map { evt in
+                    (evt.timestamp, evt.cmTime.seconds, evt.eventType)
+                }
+                ExtAppGroupSession.shared.saveSessionInfo(sessionURL: self.sessionURL, killTimestamps: killTriples)
+                NSLog("📊 SessionBuffer: Saved session info for main app (\(killTriples.count) kills)")
+                
+                // Do NOT export clips in the extension anymore
+                completion([])
             }
         }
     }
@@ -112,6 +154,12 @@ class SessionBuffer {
             sessionStartTime = Date()
             
             NSLog("📹 SessionBuffer: Recording started to \(sessionURL.lastPathComponent)")
+            
+            // Persist initial session info early so the main app knows about the session file
+            let killTriples: [(Date, Double, String)] = self.killEvents.map { evt in
+                (evt.timestamp, evt.cmTime.seconds, evt.eventType)
+            }
+            ExtAppGroupSession.shared.saveSessionInfo(sessionURL: self.sessionURL, killTimestamps: killTriples)
             
         } catch {
             NSLog("❌ SessionBuffer: Failed to initialize recording: \(error)")
@@ -259,15 +307,25 @@ class SessionBuffer {
         let asset = AVAsset(url: sessionURL)
         
         // Calculate clip timing
-        let preRoll: Double = 5.0  // 5 seconds before kill
-        let postRoll: Double = 3.0 // 3 seconds after kill
+		let defaults = UserDefaults(suiteName: "group.com.cgame.shared")
+		let preRollKey = "preRollDuration"
+		let postRollKey = "postRollDuration"
+		let hasPre = defaults?.object(forKey: preRollKey) != nil
+		let hasPost = defaults?.object(forKey: postRollKey) != nil
+		let preRoll: Double = hasPre ? (defaults?.double(forKey: preRollKey) ?? 5.0) : 5.0
+		let postRoll: Double = hasPost ? (defaults?.double(forKey: postRollKey) ?? 5.0) : 5.0
         
         let killTimeOffset = killEvent.cmTime.seconds - sessionStartCMTime.seconds
-        let startTime = max(0, killTimeOffset - preRoll)
+        let startTime = killTimeOffset - preRoll
         let endTime = killTimeOffset + postRoll
         
-        let clipStart = CMTime(seconds: startTime, preferredTimescale: 600)
-        let clipDuration = CMTime(seconds: endTime - startTime, preferredTimescale: 600)
+        // Clamp to asset duration
+        let durationSeconds = asset.duration.seconds
+        let startTimeClamped = max(0, min(startTime, durationSeconds))
+        let endTimeClamped = min(durationSeconds, max(startTimeClamped, endTime))
+        
+        let clipStart = CMTime(seconds: startTimeClamped, preferredTimescale: 600)
+        let clipDuration = CMTime(seconds: endTimeClamped - startTimeClamped, preferredTimescale: 600)
         let timeRange = CMTimeRange(start: clipStart, duration: clipDuration)
         
         // Output filename
@@ -360,9 +418,10 @@ class SessionBuffer {
                 self.finalizeRecording {}
             }
             
-            // Clean up session file
-            try? FileManager.default.removeItem(at: self.sessionURL)
-            NSLog("📹 SessionBuffer: Session cleaned up")
+            // Do NOT delete the session file here. The main app trims clips from it and will delete it
+            // after successful processing. Leaving it ensures the Clips tab can process even if the
+            // extension is terminated right after broadcast ends.
+            NSLog("📹 SessionBuffer: Session cleanup finished (session file retained)")
         }
     }
     

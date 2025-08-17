@@ -1,19 +1,9 @@
 import SwiftUI
 
-// Simple AuthService embedded for now
+// Local minimal AuthService used for testing builds
 class AuthService: ObservableObject {
-    @Published var currentUser: User?
-    @Published var isAuthenticated = true
-    
-    init() {
-        self.currentUser = User(id: "local", email: "local@cgame.app", createdAt: Date())
-        print("🎮 CGame AI Recorder starting")
-        print("ℹ️ Firebase Storage is enabled and ready!")
-    }
-    
-    func signOut() throws {
-        print("🔄 SignOut called")
-    }
+    @Published var currentUser: User? = User(id: "local", email: "local@cgame.app", createdAt: Date())
+    @Published var isAuthenticated: Bool = true
 }
 
 @main

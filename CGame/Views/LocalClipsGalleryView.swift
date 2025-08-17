@@ -1,11 +1,17 @@
 import SwiftUI
 import AVKit
+import AVFoundation
+import UIKit
 
 struct LocalClipsGalleryView: View {
     @StateObject private var clipsViewModel = ClipsViewModel()
     @State private var selectedClip: Clip?
+    @State private var contextMenuClip: Clip?
     
-    private let columns = Array(repeating: GridItem(.flexible()), count: 2)
+    private let columns = [
+        GridItem(.flexible(), spacing: 12),
+        GridItem(.flexible(), spacing: 12)
+    ]
     
     var body: some View {
         NavigationView {
@@ -24,55 +30,59 @@ struct LocalClipsGalleryView: View {
                     
                 } else {
                     ScrollView {
-                        LazyVGrid(columns: columns, spacing: 16) {
+                        LazyVGrid(columns: columns, spacing: 12) {
                             ForEach(clipsViewModel.clips) { clip in
-                                CODClipGridItem(clip: clip) {
-                                    selectedClip = clip
-                                }
+                                CODClipGridItem(clip: clip, onTap: { selectedClip = clip })
+                                    .contextMenu {
+                                        Button {
+                                            share(clip)
+                                        } label: {
+                                            Label("Share", systemImage: "square.and.arrow.up")
+                                        }
+                                        Divider()
+                                        Button(role: .destructive) {
+                                            clipsViewModel.deleteClip(clip)
+                                        } label: {
+                                            Label("Delete", systemImage: "trash")
+                                        }
+                                    }
                             }
                         }
-                        .padding()
+                        .padding(12)
                     }
-                    .refreshable {
-                        clipsViewModel.refreshClips()
-                    }
+                    .refreshable { clipsViewModel.refreshClips() }
                 }
             }
             .navigationTitle("Kill Highlights")
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {
                     Menu {
-                        Button("Refresh Clips") {
-                            clipsViewModel.refreshClips()
-                        }
-                        
+                        Button("Refresh Clips") { clipsViewModel.refreshClips() }
                         Divider()
-                        
-                        Button("Clear All Clips", role: .destructive) {
-                            clearAllClips()
-                        }
-                    } label: {
-                        Image(systemName: "ellipsis.circle")
-                    }
+                        Button("Clear All Clips", role: .destructive) { clearAllClips() }
+                    } label: { Image(systemName: "ellipsis.circle") }
                 }
             }
-            .onAppear {
-                NSLog("📱 LocalClipsGalleryView: onAppear - ClipsViewModel will handle pending clips processing")
-            }
+            .onAppear { NSLog("📱 LocalClipsGalleryView: onAppear - ClipsViewModel will handle pending clips processing") }
         }
         .fullScreenCover(item: $selectedClip) { clip in
             CODClipPlayerView(clip: clip)
         }
     }
     
+    private func share(_ clip: Clip) {
+        guard let url = clip.localURL else { return }
+        let av = UIActivityViewController(activityItems: [url], applicationActivities: nil)
+        if let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
+           let window = scene.windows.first,
+           let root = window.rootViewController {
+            root.present(av, animated: true)
+        }
+    }
     
     private func clearAllClips() {
         let localFiles = AppGroupManager.shared.getAllClipFiles()
-        
-        for fileURL in localFiles {
-            try? FileManager.default.removeItem(at: fileURL)
-        }
-        
+        for fileURL in localFiles { try? FileManager.default.removeItem(at: fileURL) }
         AppGroupManager.shared.clearPendingMetadata()
         clipsViewModel.refreshClips()
     }
@@ -81,35 +91,17 @@ struct LocalClipsGalleryView: View {
 struct EmptyClipsView: View {
     var body: some View {
         VStack(spacing: 20) {
-            CGameLogo(size: 80)
-                .opacity(0.6)
-            
-            Text("No Kill Highlights Yet")
-                .font(.title2)
-                .fontWeight(.semibold)
-            
+            CGameLogo(size: 80).opacity(0.6)
+            Text("No Kill Highlights Yet").font(.title2).fontWeight(.semibold)
             VStack(spacing: 8) {
-                Text("Start recording COD Mobile gameplay")
-                    .font(.body)
-                    .foregroundColor(.secondary)
-                
-                Text("Your epic kills will appear here automatically!")
-                    .font(.subheadline)
-                    .foregroundColor(.secondary)
+                Text("Start recording COD Mobile gameplay").font(.body).foregroundColor(.secondary)
+                Text("Your epic kills will appear here automatically!").font(.subheadline).foregroundColor(.secondary)
+            }.multilineTextAlignment(.center)
+            Button(action: {}) {
+                HStack { Image(systemName: "play.circle.fill"); Text("Start Detection") }
+                    .buttonStyle(CGamePrimaryButtonStyle(isActive: false))
             }
-            .multilineTextAlignment(.center)
-            
-            Button(action: {
-                // Navigate to home tab
-            }) {
-                HStack {
-                    Image(systemName: "play.circle.fill")
-                    Text("Start Detection")
-                }
-                .buttonStyle(CGamePrimaryButtonStyle(isActive: false))
-            }
-        }
-        .padding()
+        }.padding()
     }
 }
 
@@ -118,100 +110,91 @@ struct CODClipGridItem: View {
     let onTap: () -> Void
     
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 6) {
             Button(action: onTap) {
-                ZStack {
+                ZStack(alignment: .bottomTrailing) {
                     RoundedRectangle(cornerRadius: 12)
-                        .fill(
-                            LinearGradient(
-                                gradient: Gradient(colors: [Color.cgameRed.opacity(0.3), Color.cgameOrange.opacity(0.4)]),
-                                startPoint: .topLeading,
-                                endPoint: .bottomTrailing
-                            )
-                        )
+                        .fill(Color(.secondarySystemBackground))
                         .aspectRatio(16/9, contentMode: .fit)
+                        .overlay(ClipThumbnail(url: clip.localURL))
+                        .clipShape(RoundedRectangle(cornerRadius: 12))
                     
-                    VStack(spacing: 6) {
-                        DiamondPattern(size: 12, spacing: 3)
-                            .foregroundColor(.white)
+                    HStack(spacing: 8) {
+                        Label("KILL", systemImage: "scope")
+                            .font(.caption2).foregroundColor(.white)
+                            .padding(.horizontal, 6).padding(.vertical, 3)
+                            .background(Color.red.opacity(0.8)).cornerRadius(4)
                         
-                        Text("KILL")
-                            .font(.caption)
-                            .fontWeight(.bold)
-                            .foregroundColor(.white)
+                        Text("\(Int(clip.duration))s")
+                            .font(.caption2).fontWeight(.bold).foregroundColor(.white)
+                            .padding(.horizontal, 6).padding(.vertical, 3)
+                            .background(Color.black.opacity(0.7)).cornerRadius(4)
                     }
-                    
-                    // Play button overlay
-                    VStack {
-                        Spacer()
-                        HStack {
-                            Spacer()
-                            
-                            Image(systemName: "play.circle.fill")
-                                .font(.title2)
-                                .foregroundColor(.white)
-                                .background(Color.black.opacity(0.5))
-                                .clipShape(Circle())
-                            
-                            Spacer()
-                        }
-                        Spacer()
-                    }
-                    
-                    // Duration badge
-                    VStack {
-                        Spacer()
-                        HStack {
-                            Spacer()
-                            Text("\(Int(clip.duration))s")
-                                .font(.caption2)
-                                .fontWeight(.bold)
-                                .foregroundColor(.white)
-                                .padding(.horizontal, 6)
-                                .padding(.vertical, 2)
-                                .background(Color.black.opacity(0.8))
-                                .cornerRadius(4)
-                                .padding(.trailing, 8)
-                                .padding(.bottom, 8)
-                        }
-                    }
+                    .padding(8)
                 }
             }
             .buttonStyle(PlainButtonStyle())
             
-            VStack(alignment: .leading, spacing: 4) {
-                Text(clip.eventDescription)
-                    .font(.subheadline)
-                    .fontWeight(.semibold)
-                    .lineLimit(1)
-                
+            VStack(alignment: .leading, spacing: 2) {
+                Text(clip.eventDescription).font(.subheadline).fontWeight(.semibold).lineLimit(1)
                 HStack {
-                    Text("COD Mobile")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                    
+                    Text("COD Mobile").font(.caption).foregroundColor(.secondary)
                     Spacer()
-                    
-                    Text(formatRelativeTime(clip.timestamp))
-                        .font(.caption)
-                        .foregroundColor(.cgameOrange)
+                    Text(formatRelativeTime(clip.timestamp)).font(.caption).foregroundColor(.orange)
                 }
             }
         }
     }
     
     private func formatRelativeTime(_ date: Date) -> String {
-        let now = Date()
-        let diff = now.timeIntervalSince(date)
-        
-        if diff < 60 {
-            return "Just now"
-        } else if diff < 3600 {
-            return "\(Int(diff / 60))m ago"
-        } else if diff < 86400 {
-            return "\(Int(diff / 3600))h ago"
-        } else {
-            return "\(Int(diff / 86400))d ago"
+        let now = Date(); let diff = now.timeIntervalSince(date)
+        if diff < 60 { return "Just now" }
+        if diff < 3600 { return "\(Int(diff / 60))m ago" }
+        if diff < 86400 { return "\(Int(diff / 3600))h ago" }
+        return "\(Int(diff / 86400))d ago"
+    }
+}
+
+struct ClipThumbnail: View {
+    let url: URL?
+    @State private var image: UIImage?
+    
+    var body: some View {
+        ZStack {
+            if let img = image {
+                Image(uiImage: img)
+                    .resizable()
+                    .scaledToFill()
+            } else {
+                LinearGradient(gradient: Gradient(colors: [.gray.opacity(0.3), .gray.opacity(0.5)]), startPoint: .topLeading, endPoint: .bottomTrailing)
+                    .overlay(Image(systemName: "video").font(.largeTitle).foregroundColor(.white.opacity(0.6)))
+                    .task { await load() }
+            }
+        }
+        .clipped()
+    }
+    
+    private func load() async {
+        guard let url else { return }
+        await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                let asset = AVAsset(url: url)
+                let generator = AVAssetImageGenerator(asset: asset)
+                generator.appliesPreferredTrackTransform = true
+                generator.maximumSize = CGSize(width: 800, height: 450)
+                let time = CMTime(seconds: 1.0, preferredTimescale: 600)
+                let result: UIImage?
+                do {
+                    let cg = try generator.copyCGImage(at: time, actualTime: nil)
+                    result = UIImage(cgImage: cg)
+                } catch {
+                    result = nil
+                }
+                DispatchQueue.main.async {
+                    self.image = result
+                    continuation.resume()
+                }
+            }
         }
     }
 }
