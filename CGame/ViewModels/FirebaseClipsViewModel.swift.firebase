@@ -1,0 +1,209 @@
+import Foundation
+import FirebaseAuth
+import FirebaseFirestore
+
+@MainActor
+class FirebaseClipsViewModel: ObservableObject {
+    @Published var clips: [Clip] = []
+    @Published var isLoading = false
+    @Published var errorMessage: String?
+    
+    private var clipsListener: ListenerRegistration?
+    
+    init() {
+        loadClips()
+        startListening()
+    }
+    
+    deinit {
+        clipsListener?.remove()
+    }
+    
+    func loadClips() {
+        guard let userId = Auth.auth().currentUser?.uid else { return }
+        
+        isLoading = true
+        errorMessage = nil
+        
+        Task {
+            do {
+                let fetchedClips = try await FirestoreService.shared.getClips(for: userId)
+                clips = fetchedClips
+                isLoading = false
+                
+                // Also check for new local clips
+                await processLocalClips()
+            } catch {
+                isLoading = false
+                errorMessage = error.localizedDescription
+            }
+        }
+    }
+    
+    private func startListening() {
+        guard let userId = Auth.auth().currentUser?.uid else { return }
+        
+        clipsListener = FirestoreService.shared.listenToClips(for: userId) { [weak self] clips in
+            DispatchQueue.main.async {
+                self?.clips = clips
+            }
+        }
+    }
+    
+    func processLocalClips() async {
+        let pendingMetadata = AppGroupManager.shared.loadPendingClipMetadata()
+        
+        for metadata in pendingMetadata where !metadata.isProcessed {
+            await uploadClip(from: metadata)
+        }
+    }
+    
+    func uploadLocalClipsToCloud(progressHandler: @escaping (Double) -> Void = { _ in }) async {
+        // Get all local clips
+        let localClipURLs = AppGroupManager.shared.getAllClipFiles()
+        
+        guard !localClipURLs.isEmpty else {
+            await MainActor.run { progressHandler(1.0) }
+            return
+        }
+        
+        let totalClips = localClipURLs.count
+        var uploadedCount = 0
+        
+        for clipURL in localClipURLs {
+            await uploadLocalClip(clipURL: clipURL)
+            uploadedCount += 1
+            await MainActor.run {
+                progressHandler(Double(uploadedCount) / Double(totalClips))
+            }
+        }
+        
+        // Reload clips after upload
+        loadClips()
+    }
+    
+    private func uploadLocalClip(clipURL: URL) async {
+        guard let userId = Auth.auth().currentUser?.uid else { return }
+        
+        // Generate clip ID from filename
+        let clipId = clipURL.deletingPathExtension().lastPathComponent
+        
+        // Check if clip already exists in cloud
+        if clips.contains(where: { $0.id.contains(clipId) }) {
+            return // Already uploaded
+        }
+        
+        do {
+            // Upload video to Firebase Storage
+            let downloadURL = try await StorageService.shared.uploadClip(
+                from: clipURL,
+                clipId: clipId,
+                userId: userId
+            )
+            
+            // Extract metadata from filename and file attributes
+            let fileAttributes = try FileManager.default.attributesOfItem(atPath: clipURL.path)
+            let creationDate = fileAttributes[.creationDate] as? Date ?? Date()
+            let fileSize = fileAttributes[.size] as? UInt64 ?? 0
+            
+            // Create Clip object for Firestore
+            let clip = Clip(
+                id: clipId,
+                game: "Call of Duty", // Default for now
+                events: ["Kill"], // Default for now
+                timestamp: creationDate,
+                duration: 8.0, // Default duration
+                storagePath: downloadURL,
+                localURL: clipURL
+            )
+            
+            // Save to Firestore
+            try await FirestoreService.shared.saveClip(clip, for: userId)
+            
+        } catch {
+            print("Failed to upload local clip \(clipURL.lastPathComponent): \(error)")
+            await MainActor.run {
+                errorMessage = "Failed to upload \(clipURL.lastPathComponent): \(error.localizedDescription)"
+            }
+        }
+    }
+    
+    func uploadPendingClips() {
+        Task {
+            await processLocalClips()
+        }
+    }
+    
+    private func uploadClip(from metadata: ClipMetadata) async {
+        guard let userId = Auth.auth().currentUser?.uid,
+              let localURL = URL(string: metadata.localFilePath) else { return }
+        
+        do {
+            // Upload video to Firebase Storage
+            let downloadURL = try await StorageService.shared.uploadClip(
+                from: localURL,
+                clipId: metadata.id,
+                userId: userId
+            )
+            
+            // Create Clip object for Firestore
+            let clip = Clip(
+                id: metadata.id,
+                game: metadata.game,
+                events: metadata.events.map { $0.type },
+                timestamp: metadata.startTime,
+                duration: metadata.duration,
+                storagePath: downloadURL
+            )
+            
+            // Save to Firestore
+            try await FirestoreService.shared.saveClip(clip, for: userId)
+            
+            // Mark as processed
+            AppGroupManager.shared.markMetadataAsProcessed(clipId: metadata.id)
+            
+            // Optionally generate and upload thumbnail
+            await generateAndUploadThumbnail(for: clip, localURL: localURL, userId: userId)
+            
+        } catch {
+            print("Failed to upload clip \(metadata.id): \(error)")
+            errorMessage = "Failed to upload clip: \(error.localizedDescription)"
+        }
+    }
+    
+    private func generateAndUploadThumbnail(for clip: Clip, localURL: URL, userId: String) async {
+        // TODO: Generate thumbnail from video
+        // For now, skip thumbnail generation
+        print("Thumbnail generation not implemented yet for clip \(clip.id)")
+    }
+    
+    func deleteClip(_ clip: Clip) {
+        guard let userId = Auth.auth().currentUser?.uid else { return }
+        
+        Task {
+            do {
+                // Delete from Firebase Storage
+                try await StorageService.shared.deleteClip(clipId: clip.id, userId: userId)
+                
+                // Delete from Firestore
+                try await FirestoreService.shared.deleteClip(clip.id, for: userId)
+                
+                // Remove from local list (will be updated by listener)
+                if let index = clips.firstIndex(where: { $0.id == clip.id }) {
+                    clips.remove(at: index)
+                }
+                
+            } catch {
+                errorMessage = "Failed to delete clip: \(error.localizedDescription)"
+            }
+        }
+    }
+    
+    func refreshClips() {
+        loadClips()
+    }
+    
+    func clearError() {
+        errorMessage = nil
+    }
+}

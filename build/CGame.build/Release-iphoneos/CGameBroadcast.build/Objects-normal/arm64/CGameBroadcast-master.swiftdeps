@@ -1,0 +1,18 @@
+version: "Apple Swift version 6.1.2 (swiftlang-6.1.2.1.2 clang-1700.0.13.5)"
+options: "3cefc53b6ece28e62dec996fe7b9d7b26e5dde7634160b8ba6fd96d8ee733cb8"
+build_start_time: [1755259284, 449783000]
+build_end_time: [1755259287, 494279000]
+inputs:
+  "/Users/yehudaelmaliach/CGame/CGameBroadcast/Detection/DetectionProfile.swift": !dirty [1755259063, 321680011]
+  "/Users/yehudaelmaliach/CGame/CGameBroadcast/Detection/EventDetector.swift": !dirty [1755259063, 321153274]
+  "/Users/yehudaelmaliach/CGame/CGameBroadcast/Manager/HighlightSessionManager.swift": !dirty [1755259073, 590702723]
+  "/Users/yehudaelmaliach/CGame/CGameBroadcast/SampleHandler.swift": !dirty [1755259250, 471361137]
+  "/Users/yehudaelmaliach/CGame/CGameBroadcast/Shared/Models/Clip.swift": !dirty [1755259196, 820571317]
+  "/Users/yehudaelmaliach/CGame/CGameBroadcast/Shared/Models/ClipMetadata.swift": !dirty [1755259196, 820889976]
+  "/Users/yehudaelmaliach/CGame/CGameBroadcast/Shared/Models/DetectionConfig.swift": !dirty [1755259196, 820019330]
+  "/Users/yehudaelmaliach/CGame/CGameBroadcast/Shared/Models/SessionMetadata.swift": !dirty [1755259196, 820728605]
+  "/Users/yehudaelmaliach/CGame/CGameBroadcast/Shared/Models/User.swift": !dirty [1755259196, 820210492]
+  "/Users/yehudaelmaliach/CGame/CGameBroadcast/Shared/Models/UserSettings.swift": !dirty [1755259196, 820372738]
+  "/Users/yehudaelmaliach/CGame/CGameBroadcast/Shared/Utilities/AppGroupManager.swift": !dirty [1755259196, 821792497]
+  "/Users/yehudaelmaliach/CGame/CGameBroadcast/Shared/Utilities/ConfigManager.swift": !dirty [1755259196, 821433380]
+  "/Users/yehudaelmaliach/CGame/CGameBroadcast/Utilities/ExtensionLogger.swift": !dirty [1755259079, 656495885]

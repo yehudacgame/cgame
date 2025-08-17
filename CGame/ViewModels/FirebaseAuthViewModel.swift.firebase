@@ -1,0 +1,106 @@
+import Foundation
+import FirebaseAuth
+import AuthenticationServices
+
+@MainActor
+class AuthViewModel: ObservableObject {
+    @Published var user: User?
+    @Published var isAuthenticated = false
+    @Published var isLoading = false
+    @Published var errorMessage: String?
+    
+    private let authService = AuthService()
+    
+    init() {
+        // Listen for auth state changes
+        authService.$currentUser
+            .assign(to: &$user)
+        
+        authService.$isAuthenticated
+            .assign(to: &$isAuthenticated)
+    }
+    
+    func checkAuthStatus() {
+        // Auth state is automatically monitored by AuthService
+        // This method exists for explicit checks if needed
+    }
+    
+    func signIn(email: String, password: String) {
+        guard !email.isEmpty, !password.isEmpty else {
+            errorMessage = "Please enter both email and password"
+            return
+        }
+        
+        isLoading = true
+        errorMessage = nil
+        
+        Task {
+            do {
+                try await authService.signIn(email: email, password: password)
+                isLoading = false
+            } catch {
+                isLoading = false
+                errorMessage = error.localizedDescription
+            }
+        }
+    }
+    
+    func signUp(email: String, password: String) {
+        guard !email.isEmpty, !password.isEmpty else {
+            errorMessage = "Please enter both email and password"
+            return
+        }
+        
+        guard password.count >= 6 else {
+            errorMessage = "Password must be at least 6 characters long"
+            return
+        }
+        
+        isLoading = true
+        errorMessage = nil
+        
+        Task {
+            do {
+                try await authService.signUp(email: email, password: password)
+                isLoading = false
+            } catch {
+                isLoading = false
+                errorMessage = error.localizedDescription
+            }
+        }
+    }
+    
+    func signInWithApple(result: Result<ASAuthorization, Error>) {
+        switch result {
+        case .success(let authorization):
+            isLoading = true
+            errorMessage = nil
+            
+            Task {
+                do {
+                    try await authService.signInWithApple(authorization: authorization)
+                    isLoading = false
+                } catch {
+                    isLoading = false
+                    errorMessage = error.localizedDescription
+                }
+            }
+            
+        case .failure(let error):
+            errorMessage = error.localizedDescription
+        }
+    }
+    
+    func signOut() {
+        do {
+            try authService.signOut()
+            errorMessage = nil
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+    
+    func clearError() {
+        errorMessage = nil
+    }
+}

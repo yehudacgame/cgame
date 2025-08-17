@@ -1,0 +1,236 @@
+import SwiftUI
+
+struct UserProfileView: View {
+    @EnvironmentObject var authService: AuthService
+    @StateObject private var firestoreService = FirestoreService.shared
+    @State private var userStats: UserStats?
+    @State private var gamingProfiles: [GamingProfile] = []
+    @State private var showingGamingProfiles = false
+    @State private var showingSignOutAlert = false
+    @State private var isLoading = true
+    
+    var body: some View {
+        NavigationView {
+            List {
+                // User Info Section
+                Section {
+                    HStack {
+                        // Profile picture placeholder
+                        Circle()
+                            .fill(LinearGradient(
+                                colors: [.blue, .purple],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            ))
+                            .frame(width: 60, height: 60)
+                            .overlay {
+                                Text(initials)
+                                    .font(.title2)
+                                    .fontWeight(.bold)
+                                    .foregroundColor(.white)
+                            }
+                        
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(displayName)
+                                .font(.headline)
+                            
+                            Text(authService.currentUser?.email ?? "")
+                                .font(.subheadline)
+                                .foregroundColor(.secondary)
+                            
+                            if authService.currentUser?.email == "anonymous@cgame.local" {
+                                Text("Anonymous User")
+                                    .font(.caption)
+                                    .padding(.horizontal, 8)
+                                    .padding(.vertical, 2)
+                                    .background(Color.orange.opacity(0.2))
+                                    .foregroundColor(.orange)
+                                    .cornerRadius(4)
+                            }
+                        }
+                        
+                        Spacer()
+                    }
+                    .padding(.vertical, 8)
+                }
+                
+                // Gaming Stats Section
+                if let stats = userStats {
+                    Section("Gaming Stats") {
+                        HStack {
+                            VStack(alignment: .leading) {
+                                Text("\(stats.totalClips)")
+                                    .font(.title2)
+                                    .fontWeight(.bold)
+                                    .foregroundColor(.blue)
+                                Text("Total Clips")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            }
+                            
+                            Spacer()
+                            
+                            VStack(alignment: .trailing) {
+                                Text("\(stats.killsRecorded)")
+                                    .font(.title2)
+                                    .fontWeight(.bold)
+                                    .foregroundColor(.green)
+                                Text("Kills Recorded")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            }
+                        }
+                        
+                        HStack {
+                            VStack(alignment: .leading) {
+                                Text(stats.formattedPlaytime)
+                                    .font(.title2)
+                                    .fontWeight(.bold)
+                                    .foregroundColor(.purple)
+                                Text("Play Time")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            }
+                            
+                            Spacer()
+                            
+                            VStack(alignment: .trailing) {
+                                Text(String(format: "%.1f", stats.killDeathRatio))
+                                    .font(.title2)
+                                    .fontWeight(.bold)
+                                    .foregroundColor(.orange)
+                                Text("K/D Ratio")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            }
+                        }
+                        
+                        if !stats.favoriteGame.isEmpty {
+                            HStack {
+                                Text("Favorite Game")
+                                    .foregroundColor(.secondary)
+                                Spacer()
+                                Text(stats.favoriteGame)
+                                    .fontWeight(.medium)
+                            }
+                        }
+                    }
+                }
+                
+                // Gaming Profiles Section
+                Section("Gaming Profiles") {
+                    if gamingProfiles.isEmpty {
+                        Button("Link Gaming Accounts") {
+                            showingGamingProfiles = true
+                        }
+                        .foregroundColor(.blue)
+                    } else {
+                        ForEach(gamingProfiles.prefix(3)) { profile in
+                            HStack {
+                                Image(systemName: profile.platform.iconName)
+                                    .foregroundColor(.blue)
+                                VStack(alignment: .leading) {
+                                    Text(profile.platform.displayName)
+                                        .font(.subheadline)
+                                    Text(profile.username)
+                                        .font(.caption)
+                                        .foregroundColor(.secondary)
+                                }
+                                Spacer()
+                            }
+                        }
+                        
+                        Button("Manage Profiles") {
+                            showingGamingProfiles = true
+                        }
+                        .foregroundColor(.blue)
+                    }
+                }
+                
+                // Account Actions Section
+                Section("Account") {
+                    if authService.currentUser?.email == "anonymous@cgame.local" {
+                        Button("Create Full Account") {
+                            // Show sign up flow to convert anonymous account
+                        }
+                        .foregroundColor(.green)
+                    }
+                    
+                    Button("Sign Out") {
+                        showingSignOutAlert = true
+                    }
+                    .foregroundColor(.red)
+                }
+            }
+            .navigationTitle("Profile")
+            .refreshable {
+                await loadUserData()
+            }
+            .sheet(isPresented: $showingGamingProfiles) {
+                GamingProfilesView()
+            }
+            .alert("Sign Out", isPresented: $showingSignOutAlert) {
+                Button("Cancel", role: .cancel) { }
+                Button("Sign Out", role: .destructive) {
+                    signOut()
+                }
+            } message: {
+                Text("Are you sure you want to sign out?")
+            }
+        }
+        .task {
+            await loadUserData()
+        }
+    }
+    
+    private var displayName: String {
+        if let email = authService.currentUser?.email {
+            if email == "anonymous@cgame.local" {
+                return "Gamer"
+            } else {
+                return email.components(separatedBy: "@").first?.capitalized ?? "Gamer"
+            }
+        }
+        return "Gamer"
+    }
+    
+    private var initials: String {
+        let name = displayName
+        let components = name.components(separatedBy: " ")
+        if components.count >= 2 {
+            return String(components[0].prefix(1) + components[1].prefix(1)).uppercased()
+        } else {
+            return String(name.prefix(2)).uppercased()
+        }
+    }
+    
+    private func loadUserData() async {
+        guard let userId = authService.currentUser?.id else { return }
+        
+        isLoading = true
+        
+        async let statsTask = try? firestoreService.getUserStats(for: userId)
+        async let profilesTask = try? authService.getGamingProfiles()
+        
+        let (stats, profiles) = await (statsTask, profilesTask)
+        
+        await MainActor.run {
+            self.userStats = stats ?? UserStats()
+            self.gamingProfiles = profiles ?? []
+            self.isLoading = false
+        }
+    }
+    
+    private func signOut() {
+        do {
+            try authService.signOut()
+        } catch {
+            print("Error signing out: \(error)")
+        }
+    }
+}
+
+#Preview {
+    UserProfileView()
+        .environmentObject(AuthService())
+}

@@ -1,0 +1,45 @@
+import Foundation
+
+struct UserStats: Codable {
+    var totalClips: Int
+    var totalPlaytime: Double // in seconds
+    var favoriteGame: String
+    var killsRecorded: Int
+    var winsRecorded: Int
+    
+    init(
+        totalClips: Int = 0,
+        totalPlaytime: Double = 0,
+        favoriteGame: String = "Call of Duty",
+        killsRecorded: Int = 0,
+        winsRecorded: Int = 0
+    ) {
+        self.totalClips = totalClips
+        self.totalPlaytime = totalPlaytime
+        self.favoriteGame = favoriteGame
+        self.killsRecorded = killsRecorded
+        self.winsRecorded = winsRecorded
+    }
+    
+    var formattedPlaytime: String {
+        let hours = Int(totalPlaytime) / 3600
+        let minutes = (Int(totalPlaytime) % 3600) / 60
+        
+        if hours > 0 {
+            return "\(hours)h \(minutes)m"
+        } else {
+            return "\(minutes)m"
+        }
+    }
+    
+    var averageClipsPerHour: Double {
+        guard totalPlaytime > 0 else { return 0 }
+        return Double(totalClips) / (totalPlaytime / 3600.0)
+    }
+    
+    var killDeathRatio: Double {
+        // For now, assume 1 death per 2 kills as baseline
+        let estimatedDeaths = killsRecorded / 2
+        return estimatedDeaths > 0 ? Double(killsRecorded) / Double(estimatedDeaths) : Double(killsRecorded)
+    }
+}

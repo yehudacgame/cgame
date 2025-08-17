@@ -1,0 +1,75 @@
+{
+  "" : {
+    "const-values" : "/Users/yehudaelmaliach/CGame/build/CGame.build/Release-iphoneos/CGameBroadcast.build/Objects-normal/arm64/CGameBroadcast-master.swiftconstvalues",
+    "dependencies" : "/Users/yehudaelmaliach/CGame/build/CGame.build/Release-iphoneos/CGameBroadcast.build/Objects-normal/arm64/CGameBroadcast-master.d",
+    "diagnostics" : "/Users/yehudaelmaliach/CGame/build/CGame.build/Release-iphoneos/CGameBroadcast.build/Objects-normal/arm64/CGameBroadcast-master.dia",
+    "emit-module-dependencies" : "/Users/yehudaelmaliach/CGame/build/CGame.build/Release-iphoneos/CGameBroadcast.build/Objects-normal/arm64/CGameBroadcast-master-emit-module.d",
+    "emit-module-diagnostics" : "/Users/yehudaelmaliach/CGame/build/CGame.build/Release-iphoneos/CGameBroadcast.build/Objects-normal/arm64/CGameBroadcast-master-emit-module.dia",
+    "swift-dependencies" : "/Users/yehudaelmaliach/CGame/build/CGame.build/Release-iphoneos/CGameBroadcast.build/Objects-normal/arm64/CGameBroadcast-master.swiftdeps"
+  },
+  "/Users/yehudaelmaliach/CGame/CGameBroadcast/Detection/DetectionProfile.swift" : {
+    "index-unit-output-path" : "/CGame.build/Release-iphoneos/CGameBroadcast.build/Objects-normal/arm64/DetectionProfile.o",
+    "llvm-bc" : "/Users/yehudaelmaliach/CGame/build/CGame.build/Release-iphoneos/CGameBroadcast.build/Objects-normal/arm64/DetectionProfile.bc",
+    "object" : "/Users/yehudaelmaliach/CGame/build/CGame.build/Release-iphoneos/CGameBroadcast.build/Objects-normal/arm64/DetectionProfile.o"
+  },
+  "/Users/yehudaelmaliach/CGame/CGameBroadcast/Detection/EventDetector.swift" : {
+    "index-unit-output-path" : "/CGame.build/Release-iphoneos/CGameBroadcast.build/Objects-normal/arm64/EventDetector.o",
+    "llvm-bc" : "/Users/yehudaelmaliach/CGame/build/CGame.build/Release-iphoneos/CGameBroadcast.build/Objects-normal/arm64/EventDetector.bc",
+    "object" : "/Users/yehudaelmaliach/CGame/build/CGame.build/Release-iphoneos/CGameBroadcast.build/Objects-normal/arm64/EventDetector.o"
+  },
+  "/Users/yehudaelmaliach/CGame/CGameBroadcast/Manager/HighlightSessionManager.swift" : {
+    "index-unit-output-path" : "/CGame.build/Release-iphoneos/CGameBroadcast.build/Objects-normal/arm64/HighlightSessionManager.o",
+    "llvm-bc" : "/Users/yehudaelmaliach/CGame/build/CGame.build/Release-iphoneos/CGameBroadcast.build/Objects-normal/arm64/HighlightSessionManager.bc",
+    "object" : "/Users/yehudaelmaliach/CGame/build/CGame.build/Release-iphoneos/CGameBroadcast.build/Objects-normal/arm64/HighlightSessionManager.o"
+  },
+  "/Users/yehudaelmaliach/CGame/CGameBroadcast/SampleHandler.swift" : {
+    "index-unit-output-path" : "/CGame.build/Release-iphoneos/CGameBroadcast.build/Objects-normal/arm64/SampleHandler.o",
+    "llvm-bc" : "/Users/yehudaelmaliach/CGame/build/CGame.build/Release-iphoneos/CGameBroadcast.build/Objects-normal/arm64/SampleHandler.bc",
+    "object" : "/Users/yehudaelmaliach/CGame/build/CGame.build/Release-iphoneos/CGameBroadcast.build/Objects-normal/arm64/SampleHandler.o"
+  },
+  "/Users/yehudaelmaliach/CGame/CGameBroadcast/Shared/Models/Clip.swift" : {
+    "index-unit-output-path" : "/CGame.build/Release-iphoneos/CGameBroadcast.build/Objects-normal/arm64/Clip.o",
+    "llvm-bc" : "/Users/yehudaelmaliach/CGame/build/CGame.build/Release-iphoneos/CGameBroadcast.build/Objects-normal/arm64/Clip.bc",
+    "object" : "/Users/yehudaelmaliach/CGame/build/CGame.build/Release-iphoneos/CGameBroadcast.build/Objects-normal/arm64/Clip.o"
+  },
+  "/Users/yehudaelmaliach/CGame/CGameBroadcast/Shared/Models/ClipMetadata.swift" : {
+    "index-unit-output-path" : "/CGame.build/Release-iphoneos/CGameBroadcast.build/Objects-normal/arm64/ClipMetadata.o",
+    "llvm-bc" : "/Users/yehudaelmaliach/CGame/build/CGame.build/Release-iphoneos/CGameBroadcast.build/Objects-normal/arm64/ClipMetadata.bc",
+    "object" : "/Users/yehudaelmaliach/CGame/build/CGame.build/Release-iphoneos/CGameBroadcast.build/Objects-normal/arm64/ClipMetadata.o"
+  },
+  "/Users/yehudaelmaliach/CGame/CGameBroadcast/Shared/Models/DetectionConfig.swift" : {
+    "index-unit-output-path" : "/CGame.build/Release-iphoneos/CGameBroadcast.build/Objects-normal/arm64/DetectionConfig.o",
+    "llvm-bc" : "/Users/yehudaelmaliach/CGame/build/CGame.build/Release-iphoneos/CGameBroadcast.build/Objects-normal/arm64/DetectionConfig.bc",
+    "object" : "/Users/yehudaelmaliach/CGame/build/CGame.build/Release-iphoneos/CGameBroadcast.build/Objects-normal/arm64/DetectionConfig.o"
+  },
+  "/Users/yehudaelmaliach/CGame/CGameBroadcast/Shared/Models/SessionMetadata.swift" : {
+    "index-unit-output-path" : "/CGame.build/Release-iphoneos/CGameBroadcast.build/Objects-normal/arm64/SessionMetadata.o",
+    "llvm-bc" : "/Users/yehudaelmaliach/CGame/build/CGame.build/Release-iphoneos/CGameBroadcast.build/Objects-normal/arm64/SessionMetadata.bc",
+    "object" : "/Users/yehudaelmaliach/CGame/build/CGame.build/Release-iphoneos/CGameBroadcast.build/Objects-normal/arm64/SessionMetadata.o"
+  },
+  "/Users/yehudaelmaliach/CGame/CGameBroadcast/Shared/Models/User.swift" : {
+    "index-unit-output-path" : "/CGame.build/Release-iphoneos/CGameBroadcast.build/Objects-normal/arm64/User.o",
+    "llvm-bc" : "/Users/yehudaelmaliach/CGame/build/CGame.build/Release-iphoneos/CGameBroadcast.build/Objects-normal/arm64/User.bc",
+    "object" : "/Users/yehudaelmaliach/CGame/build/CGame.build/Release-iphoneos/CGameBroadcast.build/Objects-normal/arm64/User.o"
+  },
+  "/Users/yehudaelmaliach/CGame/CGameBroadcast/Shared/Models/UserSettings.swift" : {
+    "index-unit-output-path" : "/CGame.build/Release-iphoneos/CGameBroadcast.build/Objects-normal/arm64/UserSettings.o",
+    "llvm-bc" : "/Users/yehudaelmaliach/CGame/build/CGame.build/Release-iphoneos/CGameBroadcast.build/Objects-normal/arm64/UserSettings.bc",
+    "object" : "/Users/yehudaelmaliach/CGame/build/CGame.build/Release-iphoneos/CGameBroadcast.build/Objects-normal/arm64/UserSettings.o"
+  },
+  "/Users/yehudaelmaliach/CGame/CGameBroadcast/Shared/Utilities/AppGroupManager.swift" : {
+    "index-unit-output-path" : "/CGame.build/Release-iphoneos/CGameBroadcast.build/Objects-normal/arm64/AppGroupManager.o",
+    "llvm-bc" : "/Users/yehudaelmaliach/CGame/build/CGame.build/Release-iphoneos/CGameBroadcast.build/Objects-normal/arm64/AppGroupManager.bc",
+    "object" : "/Users/yehudaelmaliach/CGame/build/CGame.build/Release-iphoneos/CGameBroadcast.build/Objects-normal/arm64/AppGroupManager.o"
+  },
+  "/Users/yehudaelmaliach/CGame/CGameBroadcast/Shared/Utilities/ConfigManager.swift" : {
+    "index-unit-output-path" : "/CGame.build/Release-iphoneos/CGameBroadcast.build/Objects-normal/arm64/ConfigManager.o",
+    "llvm-bc" : "/Users/yehudaelmaliach/CGame/build/CGame.build/Release-iphoneos/CGameBroadcast.build/Objects-normal/arm64/ConfigManager.bc",
+    "object" : "/Users/yehudaelmaliach/CGame/build/CGame.build/Release-iphoneos/CGameBroadcast.build/Objects-normal/arm64/ConfigManager.o"
+  },
+  "/Users/yehudaelmaliach/CGame/CGameBroadcast/Utilities/ExtensionLogger.swift" : {
+    "index-unit-output-path" : "/CGame.build/Release-iphoneos/CGameBroadcast.build/Objects-normal/arm64/ExtensionLogger.o",
+    "llvm-bc" : "/Users/yehudaelmaliach/CGame/build/CGame.build/Release-iphoneos/CGameBroadcast.build/Objects-normal/arm64/ExtensionLogger.bc",
+    "object" : "/Users/yehudaelmaliach/CGame/build/CGame.build/Release-iphoneos/CGameBroadcast.build/Objects-normal/arm64/ExtensionLogger.o"
+  }
+}

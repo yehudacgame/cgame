@@ -1,0 +1,294 @@
+import Foundation
+import FirebaseCore
+import FirebaseFirestore
+import FirebaseAuth
+
+class FirestoreService {
+    static let shared = FirestoreService()
+    private var db: Firestore? {
+        guard FirebaseApp.app() != nil else {
+            print("⚠️ FirestoreService: Running in local mode without Firebase")
+            return nil
+        }
+        return Firestore.firestore()
+    }
+    
+    private init() {}
+    
+    // MARK: - User Management
+    
+    func createUser(_ user: User) async throws {
+        guard let db = db else { return }
+        try await db.collection("users").document(user.id).setData([
+            "email": user.email,
+            "createdAt": Timestamp(date: user.createdAt)
+        ])
+        
+        // Create default settings
+        let defaultSettings = UserSettings()
+        try await saveUserSettings(defaultSettings, for: user.id)
+    }
+    
+    func createUserIfNeeded(_ user: User) async throws {
+        let document = db.collection("users").document(user.id)
+        let docSnapshot = try await document.getDocument()
+        
+        if !docSnapshot.exists {
+            try await createUser(user)
+        }
+    }
+    
+    func getUser(id: String) async throws -> User? {
+        let document = try await db.collection("users").document(id).getDocument()
+        
+        guard document.exists,
+              let data = document.data(),
+              let email = data["email"] as? String,
+              let createdAtTimestamp = data["createdAt"] as? Timestamp else {
+            return nil
+        }
+        
+        return User(
+            id: id,
+            email: email,
+            createdAt: createdAtTimestamp.dateValue()
+        )
+    }
+    
+    // MARK: - User Settings
+    
+    func saveUserSettings(_ settings: UserSettings, for userId: String) async throws {
+        try await db.collection("users")
+            .document(userId)
+            .collection("settings")
+            .document("userSettings")
+            .setData([
+                "gameProfileName": settings.gameProfileName,
+                "videoQuality": settings.videoQuality.rawValue,
+                "preRollDuration": settings.preRollDuration,
+                "postRollDuration": settings.postRollDuration
+            ])
+    }
+    
+    func getUserSettings(for userId: String) async throws -> UserSettings {
+        let document = try await db.collection("users")
+            .document(userId)
+            .collection("settings")
+            .document("userSettings")
+            .getDocument()
+        
+        guard document.exists,
+              let data = document.data() else {
+            return UserSettings() // Return defaults
+        }
+        
+        let gameProfileName = data["gameProfileName"] as? String ?? "Fortnite"
+        let videoQualityString = data["videoQuality"] as? String ?? "1080p"
+        let videoQuality = UserSettings.VideoQuality(rawValue: videoQualityString) ?? .hd1080p
+        let preRollDuration = data["preRollDuration"] as? Double ?? 5.0
+        let postRollDuration = data["postRollDuration"] as? Double ?? 3.0
+        
+        return UserSettings(
+            gameProfileName: gameProfileName,
+            videoQuality: videoQuality,
+            preRollDuration: preRollDuration,
+            postRollDuration: postRollDuration
+        )
+    }
+    
+    // MARK: - Clips Management
+    
+    func saveClip(_ clip: Clip, for userId: String) async throws {
+        try await db.collection("users")
+            .document(userId)
+            .collection("clips")
+            .document(clip.id)
+            .setData([
+                "game": clip.game,
+                "events": clip.events,
+                "timestamp": Timestamp(date: clip.timestamp),
+                "duration": clip.duration,
+                "storagePath": clip.storagePath,
+                "thumbnailURL": clip.thumbnailURL as Any
+            ])
+    }
+    
+    func getClips(for userId: String, limit: Int = 50) async throws -> [Clip] {
+        let query = db.collection("users")
+            .document(userId)
+            .collection("clips")
+            .order(by: "timestamp", descending: true)
+            .limit(to: limit)
+        
+        let snapshot = try await query.getDocuments()
+        
+        return snapshot.documents.compactMap { document in
+            let data = document.data()
+            guard let game = data["game"] as? String,
+                  let events = data["events"] as? [String],
+                  let timestampFirestore = data["timestamp"] as? Timestamp,
+                  let duration = data["duration"] as? Double,
+                  let storagePath = data["storagePath"] as? String else {
+                return nil
+            }
+            
+            let thumbnailURL = data["thumbnailURL"] as? String
+            
+            return Clip(
+                id: document.documentID,
+                game: game,
+                events: events,
+                timestamp: timestampFirestore.dateValue(),
+                duration: duration,
+                storagePath: storagePath,
+                thumbnailURL: thumbnailURL
+            )
+        }
+    }
+    
+    func deleteClip(_ clipId: String, for userId: String) async throws {
+        try await db.collection("users")
+            .document(userId)
+            .collection("clips")
+            .document(clipId)
+            .delete()
+    }
+    
+    func updateClipThumbnail(_ clipId: String, thumbnailURL: String, for userId: String) async throws {
+        try await db.collection("users")
+            .document(userId)
+            .collection("clips")
+            .document(clipId)
+            .updateData(["thumbnailURL": thumbnailURL])
+    }
+    
+    // MARK: - Gaming Profiles Management
+    
+    func saveGamingProfile(userId: String, platform: GamingPlatform, username: String) async throws {
+        let profile = GamingProfile(platform: platform, username: username)
+        
+        try await db.collection("users")
+            .document(userId)
+            .collection("gamingProfiles")
+            .document(profile.id)
+            .setData([
+                "platform": platform.rawValue,
+                "username": username,
+                "linkedAt": Timestamp(date: profile.linkedAt)
+            ])
+    }
+    
+    func getGamingProfiles(for userId: String) async throws -> [GamingProfile] {
+        let query = db.collection("users")
+            .document(userId)
+            .collection("gamingProfiles")
+            .order(by: "linkedAt", descending: true)
+        
+        let snapshot = try await query.getDocuments()
+        
+        return snapshot.documents.compactMap { document in
+            let data = document.data()
+            guard let platformString = data["platform"] as? String,
+                  let platform = GamingPlatform(rawValue: platformString),
+                  let username = data["username"] as? String,
+                  let linkedAtTimestamp = data["linkedAt"] as? Timestamp else {
+                return nil
+            }
+            
+            return GamingProfile(platform: platform, username: username)
+        }
+    }
+    
+    func deleteGamingProfile(profileId: String, for userId: String) async throws {
+        try await db.collection("users")
+            .document(userId)
+            .collection("gamingProfiles")
+            .document(profileId)
+            .delete()
+    }
+    
+    // MARK: - User Stats & Achievements
+    
+    func saveUserStats(_ stats: UserStats, for userId: String) async throws {
+        try await db.collection("users")
+            .document(userId)
+            .collection("stats")
+            .document("overall")
+            .setData([
+                "totalClips": stats.totalClips,
+                "totalPlaytime": stats.totalPlaytime,
+                "favoriteGame": stats.favoriteGame,
+                "killsRecorded": stats.killsRecorded,
+                "winsRecorded": stats.winsRecorded,
+                "lastUpdated": Timestamp(date: Date())
+            ])
+    }
+    
+    func getUserStats(for userId: String) async throws -> UserStats? {
+        let document = try await db.collection("users")
+            .document(userId)
+            .collection("stats")
+            .document("overall")
+            .getDocument()
+        
+        guard document.exists,
+              let data = document.data() else {
+            return nil
+        }
+        
+        let totalClips = data["totalClips"] as? Int ?? 0
+        let totalPlaytime = data["totalPlaytime"] as? Double ?? 0
+        let favoriteGame = data["favoriteGame"] as? String ?? ""
+        let killsRecorded = data["killsRecorded"] as? Int ?? 0
+        let winsRecorded = data["winsRecorded"] as? Int ?? 0
+        
+        return UserStats(
+            totalClips: totalClips,
+            totalPlaytime: totalPlaytime,
+            favoriteGame: favoriteGame,
+            killsRecorded: killsRecorded,
+            winsRecorded: winsRecorded
+        )
+    }
+    
+    // MARK: - Realtime Listeners
+    
+    func listenToClips(for userId: String, completion: @escaping ([Clip]) -> Void) -> ListenerRegistration {
+        return db.collection("users")
+            .document(userId)
+            .collection("clips")
+            .order(by: "timestamp", descending: true)
+            .addSnapshotListener { snapshot, error in
+                guard let documents = snapshot?.documents else {
+                    print("Error fetching clips: \(error?.localizedDescription ?? "Unknown error")")
+                    completion([])
+                    return
+                }
+                
+                let clips = documents.compactMap { document -> Clip? in
+                    let data = document.data()
+                    guard let game = data["game"] as? String,
+                          let events = data["events"] as? [String],
+                          let timestampFirestore = data["timestamp"] as? Timestamp,
+                          let duration = data["duration"] as? Double,
+                          let storagePath = data["storagePath"] as? String else {
+                        return nil
+                    }
+                    
+                    let thumbnailURL = data["thumbnailURL"] as? String
+                    
+                    return Clip(
+                        id: document.documentID,
+                        game: game,
+                        events: events,
+                        timestamp: timestampFirestore.dateValue(),
+                        duration: duration,
+                        storagePath: storagePath,
+                        thumbnailURL: thumbnailURL
+                    )
+                }
+                
+                completion(clips)
+            }
+    }
+}

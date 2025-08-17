@@ -1,0 +1,238 @@
+import SwiftUI
+import AVKit
+
+struct CloudClipsGalleryView: View {
+    @StateObject private var viewModel = FirebaseClipsViewModel()
+    @EnvironmentObject var authService: AuthService
+    @State private var showingUploadProgress = false
+    @State private var uploadProgress: Double = 0
+    
+    var body: some View {
+        NavigationView {
+            Group {
+                if viewModel.isLoading {
+                    ProgressView("Loading clips...")
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else if viewModel.clips.isEmpty {
+                    emptyStateView
+                } else {
+                    clipsGridView
+                }
+            }
+            .navigationTitle("Cloud Clips")
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Menu {
+                        Button("Upload Local Clips", systemImage: "icloud.and.arrow.up") {
+                            uploadLocalClips()
+                        }
+                        
+                        Button("Refresh", systemImage: "arrow.clockwise") {
+                            Task {
+                                await viewModel.loadClips()
+                            }
+                        }
+                        
+                        Divider()
+                        
+                        Button("Gaming Profiles", systemImage: "gamecontroller") {
+                            // Show gaming profiles
+                        }
+                    } label: {
+                        Image(systemName: "ellipsis.circle")
+                    }
+                }
+            }
+            .refreshable {
+                await viewModel.loadClips()
+            }
+            .alert("Error", isPresented: .constant(viewModel.errorMessage != nil)) {
+                Button("OK") {
+                    viewModel.clearError()
+                }
+            } message: {
+                Text(viewModel.errorMessage ?? "")
+            }
+            .sheet(isPresented: $showingUploadProgress) {
+                UploadProgressView(progress: uploadProgress)
+            }
+        }
+        .task {
+            await viewModel.loadClips()
+        }
+    }
+    
+    private var emptyStateView: some View {
+        VStack(spacing: 20) {
+            Image(systemName: "icloud.slash")
+                .font(.system(size: 60))
+                .foregroundColor(.gray)
+            
+            Text("No Cloud Clips Yet")
+                .font(.headline)
+            
+            Text("Upload your best gaming moments to the cloud and access them anywhere!")
+                .font(.subheadline)
+                .foregroundColor(.secondary)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal)
+            
+            Button("Upload Local Clips") {
+                uploadLocalClips()
+            }
+            .buttonStyle(.borderedProminent)
+        }
+    }
+    
+    private var clipsGridView: some View {
+        ScrollView {
+            LazyVGrid(columns: [
+                GridItem(.flexible()),
+                GridItem(.flexible())
+            ], spacing: 16) {
+                ForEach(viewModel.clips) { clip in
+                    CloudClipCard(clip: clip) {
+                        await viewModel.deleteClip(clip)
+                    }
+                }
+            }
+            .padding()
+        }
+    }
+    
+    private func uploadLocalClips() {
+        showingUploadProgress = true
+        uploadProgress = 0
+        
+        Task {
+            await viewModel.uploadLocalClipsToCloud { progress in
+                await MainActor.run {
+                    uploadProgress = progress
+                    if progress >= 1.0 {
+                        showingUploadProgress = false
+                    }
+                }
+            }
+        }
+    }
+}
+
+struct CloudClipCard: View {
+    let clip: Clip
+    let onDelete: () async -> Void
+    @State private var showingPlayer = false
+    @State private var isLoading = false
+    
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            // Thumbnail or placeholder
+            RoundedRectangle(cornerRadius: 8)
+                .fill(LinearGradient(
+                    colors: [.blue.opacity(0.6), .purple.opacity(0.4)],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                ))
+                .aspectRatio(16/9, contentMode: .fit)
+                .overlay {
+                    VStack {
+                        Image(systemName: "play.circle.fill")
+                            .font(.title)
+                            .foregroundColor(.white)
+                        
+                        Text(formatDuration(clip.duration))
+                            .font(.caption)
+                            .foregroundColor(.white)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 4)
+                            .background(Color.black.opacity(0.6))
+                            .cornerRadius(4)
+                    }
+                }
+                .onTapGesture {
+                    showingPlayer = true
+                }
+            
+            VStack(alignment: .leading, spacing: 4) {
+                HStack {
+                    Text(clip.game)
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                    
+                    Spacer()
+                    
+                    Menu {
+                        Button("Delete", systemImage: "trash", role: .destructive) {
+                            Task { await onDelete() }
+                        }
+                    } label: {
+                        Image(systemName: "ellipsis")
+                            .foregroundColor(.secondary)
+                    }
+                }
+                
+                Text(clip.events.joined(separator: ", "))
+                    .font(.subheadline)
+                    .fontWeight(.medium)
+                    .lineLimit(1)
+                
+                Text(formatDate(clip.timestamp))
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+        }
+        .padding(8)
+        .background(Color(.systemBackground))
+        .cornerRadius(12)
+        .shadow(color: .black.opacity(0.1), radius: 2, x: 0, y: 1)
+        .sheet(isPresented: $showingPlayer) {
+            if let localURL = clip.localURL {
+                ClipPlayerView(url: localURL)
+            }
+        }
+    }
+    
+    private func formatDuration(_ duration: Double) -> String {
+        let minutes = Int(duration) / 60
+        let seconds = Int(duration) % 60
+        return String(format: "%d:%02d", minutes, seconds)
+    }
+    
+    private func formatDate(_ date: Date) -> String {
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .abbreviated
+        return formatter.localizedString(for: date, relativeTo: Date())
+    }
+}
+
+struct UploadProgressView: View {
+    let progress: Double
+    @Environment(\.dismiss) private var dismiss
+    
+    var body: some View {
+        VStack(spacing: 24) {
+            Text("Uploading to Cloud")
+                .font(.headline)
+            
+            ProgressView(value: progress)
+                .progressViewStyle(LinearProgressViewStyle())
+            
+            Text("\(Int(progress * 100))% Complete")
+                .font(.subheadline)
+                .foregroundColor(.secondary)
+            
+            if progress >= 1.0 {
+                Button("Done") {
+                    dismiss()
+                }
+                .buttonStyle(.borderedProminent)
+            }
+        }
+        .padding()
+        .frame(maxWidth: 300)
+    }
+}
+
+#Preview {
+    CloudClipsGalleryView()
+        .environmentObject(AuthService())
+}

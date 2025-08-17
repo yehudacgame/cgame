@@ -1,0 +1,315 @@
+import Foundation
+import FirebaseAuth
+import AuthenticationServices
+import CryptoKit
+import GoogleSignIn
+
+class AuthService: ObservableObject {
+    @Published var currentUser: User?
+    @Published var isAuthenticated = false
+    
+    private var handle: AuthStateDidChangeListenerHandle?
+    
+    init() {
+        // Check if Firebase is configured
+        if FirebaseApp.app() != nil {
+            handle = Auth.auth().addStateDidChangeListener { [weak self] _, user in
+                if let user = user {
+                    self?.currentUser = User(
+                        id: user.uid,
+                        email: user.email ?? "",
+                        createdAt: user.metadata.creationDate ?? Date()
+                    )
+                    self?.isAuthenticated = true
+                } else {
+                    self?.currentUser = nil
+                    self?.isAuthenticated = false
+                }
+            }
+        } else {
+            // Local mode - no authentication
+            print("⚠️ AuthService: Running in local mode without Firebase")
+            self.currentUser = nil
+            self.isAuthenticated = false
+        }
+    }
+    
+    deinit {
+        if let handle = handle {
+            Auth.auth().removeStateDidChangeListener(handle)
+        }
+    }
+    
+    func signIn(email: String, password: String) async throws {
+        try await Auth.auth().signIn(withEmail: email, password: password)
+    }
+    
+    func signUp(email: String, password: String) async throws {
+        let result = try await Auth.auth().createUser(withEmail: email, password: password)
+        
+        // Create user document in Firestore
+        let user = User(id: result.user.uid, email: email)
+        try await FirestoreService.shared.createUser(user)
+    }
+    
+    func signInWithApple(authorization: ASAuthorization) async throws {
+        guard let appleIDCredential = authorization.credential as? ASAuthorizationAppleIDCredential else {
+            throw AuthError.invalidCredential
+        }
+        
+        guard let nonce = currentNonce else {
+            throw AuthError.invalidState
+        }
+        
+        guard let appleIDToken = appleIDCredential.identityToken else {
+            throw AuthError.invalidCredential
+        }
+        
+        guard let idTokenString = String(data: appleIDToken, encoding: .utf8) else {
+            throw AuthError.invalidCredential
+        }
+        
+        let credential = OAuthProvider.credential(withProviderID: "apple.com",
+                                                  idToken: idTokenString,
+                                                  rawNonce: nonce)
+        
+        let result = try await Auth.auth().signIn(with: credential)
+        
+        // Check if this is a new user and create Firestore document
+        if let email = result.user.email {
+            let user = User(id: result.user.uid, email: email)
+            try? await FirestoreService.shared.createUserIfNeeded(user)
+        }
+    }
+    
+    func signOut() throws {
+        try Auth.auth().signOut()
+        GIDSignIn.sharedInstance.signOut()
+    }
+    
+    // MARK: - Google Sign In
+    
+    func signInWithGoogle() async throws {
+        guard let presentingViewController = await UIApplication.shared.firstKeyWindow?.rootViewController else {
+            throw AuthError.invalidState
+        }
+        
+        guard let result = try await GIDSignIn.sharedInstance.signIn(withPresenting: presentingViewController) else {
+            throw AuthError.invalidCredential
+        }
+        
+        let user = result.user
+        guard let idToken = user.idToken?.tokenString else {
+            throw AuthError.invalidCredential
+        }
+        
+        let credential = GoogleAuthProvider.credential(withIDToken: idToken,
+                                                       accessToken: user.accessToken.tokenString)
+        
+        let authResult = try await Auth.auth().signIn(with: credential)
+        
+        // Create user document if needed
+        if let email = authResult.user.email {
+            let newUser = User(id: authResult.user.uid, email: email)
+            try? await FirestoreService.shared.createUserIfNeeded(newUser)
+        }
+    }
+    
+    // MARK: - Twitter/X Sign In
+    
+    func signInWithTwitter() async throws {
+        let provider = OAuthProvider(providerID: "twitter.com")
+        
+        guard let presentingViewController = await UIApplication.shared.firstKeyWindow?.rootViewController else {
+            throw AuthError.invalidState
+        }
+        
+        let result = try await provider.getCredentialWith(presentingViewController)
+        let authResult = try await Auth.auth().signIn(with: result)
+        
+        // Create user document if needed
+        if let email = authResult.user.email {
+            let user = User(id: authResult.user.uid, email: email)
+            try? await FirestoreService.shared.createUserIfNeeded(user)
+        }
+    }
+    
+    // MARK: - Anonymous Sign In (for quick gaming sessions)
+    
+    func signInAnonymously() async throws {
+        let result = try await Auth.auth().signInAnonymously()
+        
+        // Create anonymous user document
+        let user = User(id: result.user.uid, email: "anonymous@cgame.local")
+        try? await FirestoreService.shared.createUserIfNeeded(user)
+    }
+    
+    // MARK: - Gaming Platform Integration Helpers
+    
+    func linkGamingProfile(platform: GamingPlatform, username: String) async throws {
+        guard let currentUser = Auth.auth().currentUser else {
+            throw AuthError.invalidState
+        }
+        
+        // Save gaming profile to Firestore
+        try await FirestoreService.shared.saveGamingProfile(
+            userId: currentUser.uid,
+            platform: platform,
+            username: username
+        )
+    }
+    
+    func getGamingProfiles() async throws -> [GamingProfile] {
+        guard let currentUser = Auth.auth().currentUser else {
+            throw AuthError.invalidState
+        }
+        
+        return try await FirestoreService.shared.getGamingProfiles(for: currentUser.uid)
+    }
+    
+    // MARK: - Apple Sign In Helpers
+    
+    private var currentNonce: String?
+    
+    func startSignInWithAppleFlow() -> ASAuthorizationAppleIDRequest {
+        let nonce = randomNonceString()
+        currentNonce = nonce
+        let appleIDProvider = ASAuthorizationAppleIDProvider()
+        let request = appleIDProvider.createRequest()
+        request.requestedScopes = [.fullName, .email]
+        request.nonce = sha256(nonce)
+        return request
+    }
+    
+    private func randomNonceString(length: Int = 32) -> String {
+        precondition(length > 0)
+        let charset: [Character] =
+        Array("0123456789ABCDEFGHIJKLMNOPQRSTUVXYZabcdefghijklmnopqrstuvwxyz-._")
+        var result = ""
+        var remainingLength = length
+        
+        while remainingLength > 0 {
+            let randoms: [UInt8] = (0 ..< 16).map { _ in
+                var random: UInt8 = 0
+                let errorCode = SecRandomCopyBytes(kSecRandomDefault, 1, &random)
+                if errorCode != errSecSuccess {
+                    fatalError("Unable to generate nonce. SecRandomCopyBytes failed with OSStatus \(errorCode)")
+                }
+                return random
+            }
+            
+            randoms.forEach { random in
+                if remainingLength == 0 {
+                    return
+                }
+                
+                if random < charset.count {
+                    result.append(charset[Int(random)])
+                    remainingLength -= 1
+                }
+            }
+        }
+        
+        return result
+    }
+    
+    private func sha256(_ input: String) -> String {
+        let inputData = Data(input.utf8)
+        let hashedData = SHA256.hash(data: inputData)
+        let hashString = hashedData.compactMap {
+            String(format: "%02x", $0)
+        }.joined()
+        
+        return hashString
+    }
+}
+
+enum AuthError: Error, LocalizedError {
+    case invalidCredential
+    case invalidState
+    case signInCancelled
+    case networkError
+    
+    var errorDescription: String? {
+        switch self {
+        case .invalidCredential:
+            return "Invalid credential received"
+        case .invalidState:
+            return "Invalid authentication state"
+        case .signInCancelled:
+            return "Sign in was cancelled"
+        case .networkError:
+            return "Network connection error"
+        }
+    }
+}
+
+// MARK: - Gaming Platform Models
+
+enum GamingPlatform: String, CaseIterable, Codable {
+    case steam = "steam"
+    case epicGames = "epic"
+    case xbox = "xbox"
+    case playstation = "playstation"
+    case nintendo = "nintendo"
+    case battleNet = "battlenet"
+    case discord = "discord"
+    case twitch = "twitch"
+    case riot = "riot"
+    case activision = "activision"
+    
+    var displayName: String {
+        switch self {
+        case .steam: return "Steam"
+        case .epicGames: return "Epic Games"
+        case .xbox: return "Xbox Live"
+        case .playstation: return "PlayStation"
+        case .nintendo: return "Nintendo"
+        case .battleNet: return "Battle.net"
+        case .discord: return "Discord"
+        case .twitch: return "Twitch"
+        case .riot: return "Riot Games"
+        case .activision: return "Activision"
+        }
+    }
+    
+    var iconName: String {
+        switch self {
+        case .steam: return "gamecontroller.fill"
+        case .epicGames: return "e.circle.fill"
+        case .xbox: return "xbox.logo"
+        case .playstation: return "playstation.logo"
+        case .nintendo: return "n.circle.fill"
+        case .battleNet: return "b.circle.fill"
+        case .discord: return "d.circle.fill"
+        case .twitch: return "t.circle.fill"
+        case .riot: return "r.circle.fill"
+        case .activision: return "a.circle.fill"
+        }
+    }
+}
+
+struct GamingProfile: Codable, Identifiable {
+    let id: String
+    let platform: GamingPlatform
+    let username: String
+    let linkedAt: Date
+    
+    init(platform: GamingPlatform, username: String) {
+        self.id = UUID().uuidString
+        self.platform = platform
+        self.username = username
+        self.linkedAt = Date()
+    }
+}
+
+// MARK: - UIApplication Extension
+
+extension UIApplication {
+    var firstKeyWindow: UIWindow? {
+        return UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .filter { $0.activationState == .foregroundActive }
+            .first?.keyWindow
+    }
+}

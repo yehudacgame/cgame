@@ -1,0 +1,344 @@
+import SwiftUI
+import AuthenticationServices
+
+struct GamerAuthView: View {
+    @StateObject private var authService = AuthService()
+    @State private var showingEmailSignIn = false
+    @State private var showingGamingProfiles = false
+    @State private var isLoading = false
+    @State private var errorMessage: String?
+    
+    var body: some View {
+        ZStack {
+            // Gaming-themed gradient background
+            LinearGradient(
+                gradient: Gradient(colors: [
+                    Color.black,
+                    Color.blue.opacity(0.8),
+                    Color.purple.opacity(0.6)
+                ]),
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+            .ignoresSafeArea()
+            
+            VStack(spacing: 30) {
+                Spacer()
+                
+                // App logo and title
+                VStack(spacing: 16) {
+                    Image(systemName: "gamecontroller.fill")
+                        .font(.system(size: 60))
+                        .foregroundStyle(
+                            LinearGradient(
+                                colors: [.cyan, .blue],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            )
+                        )
+                    
+                    Text("CGame")
+                        .font(.largeTitle)
+                        .fontWeight(.bold)
+                        .foregroundColor(.white)
+                    
+                    Text("Level up your gaming highlights")
+                        .font(.subheadline)
+                        .foregroundColor(.gray)
+                        .multilineTextAlignment(.center)
+                }
+                
+                VStack(spacing: 16) {
+                    // Quick Start (Anonymous)
+                    Button(action: signInAnonymously) {
+                        HStack {
+                            Image(systemName: "bolt.fill")
+                            Text("Quick Start")
+                                .fontWeight(.semibold)
+                        }
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 50)
+                        .background(
+                            LinearGradient(
+                                colors: [.orange, .red],
+                                startPoint: .leading,
+                                endPoint: .trailing
+                            )
+                        )
+                        .foregroundColor(.white)
+                        .cornerRadius(25)
+                    }
+                    .disabled(isLoading)
+                    
+                    // Google Sign In
+                    Button(action: signInWithGoogle) {
+                        HStack {
+                            Image(systemName: "globe")
+                            Text("Continue with Google")
+                                .fontWeight(.semibold)
+                        }
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 50)
+                        .background(Color.white)
+                        .foregroundColor(.black)
+                        .cornerRadius(25)
+                    }
+                    .disabled(isLoading)
+                    
+                    // Apple Sign In
+                    SignInWithAppleButton(
+                        onRequest: { request in
+                            request.nonce = authService.startSignInWithAppleFlow().nonce
+                            request.requestedScopes = [.fullName, .email]
+                        },
+                        onCompletion: { result in
+                            handleAppleSignIn(result)
+                        }
+                    )
+                    .signInWithAppleButtonStyle(.white)
+                    .frame(height: 50)
+                    .cornerRadius(25)
+                    
+                    // Twitter/X Sign In
+                    Button(action: signInWithTwitter) {
+                        HStack {
+                            Image(systemName: "x.circle.fill")
+                            Text("Continue with X")
+                                .fontWeight(.semibold)
+                        }
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 50)
+                        .background(Color.black)
+                        .foregroundColor(.white)
+                        .cornerRadius(25)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 25)
+                                .stroke(Color.white.opacity(0.3), lineWidth: 1)
+                        )
+                    }
+                    .disabled(isLoading)
+                    
+                    // Email Sign In
+                    Button(action: { showingEmailSignIn = true }) {
+                        HStack {
+                            Image(systemName: "envelope.fill")
+                            Text("Continue with Email")
+                                .fontWeight(.semibold)
+                        }
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 50)
+                        .background(Color.gray.opacity(0.2))
+                        .foregroundColor(.white)
+                        .cornerRadius(25)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 25)
+                                .stroke(Color.white.opacity(0.3), lineWidth: 1)
+                        )
+                    }
+                    .disabled(isLoading)
+                }
+                .padding(.horizontal, 40)
+                
+                // Gaming platform note
+                VStack(spacing: 8) {
+                    Text("Link your gaming accounts later")
+                        .font(.caption)
+                        .foregroundColor(.gray)
+                    
+                    HStack(spacing: 12) {
+                        ForEach([GamingPlatform.steam, .epicGames, .xbox, .playstation, .discord], id: \.self) { platform in
+                            Image(systemName: platform.iconName)
+                                .foregroundColor(.gray)
+                                .font(.caption)
+                        }
+                    }
+                }
+                
+                Spacer()
+            }
+            
+            // Loading overlay
+            if isLoading {
+                Color.black.opacity(0.5)
+                    .ignoresSafeArea()
+                
+                ProgressView()
+                    .progressViewStyle(CircularProgressViewStyle(tint: .cyan))
+                    .scaleEffect(1.5)
+            }
+        }
+        .alert("Sign In Error", isPresented: .constant(errorMessage != nil)) {
+            Button("OK") {
+                errorMessage = nil
+            }
+        } message: {
+            Text(errorMessage ?? "")
+        }
+        .sheet(isPresented: $showingEmailSignIn) {
+            EmailSignInView(authService: authService)
+        }
+    }
+    
+    // MARK: - Sign In Methods
+    
+    private func signInAnonymously() {
+        isLoading = true
+        errorMessage = nil
+        
+        Task {
+            do {
+                try await authService.signInAnonymously()
+            } catch {
+                await MainActor.run {
+                    errorMessage = error.localizedDescription
+                    isLoading = false
+                }
+            }
+        }
+    }
+    
+    private func signInWithGoogle() {
+        isLoading = true
+        errorMessage = nil
+        
+        Task {
+            do {
+                try await authService.signInWithGoogle()
+            } catch {
+                await MainActor.run {
+                    errorMessage = error.localizedDescription
+                    isLoading = false
+                }
+            }
+        }
+    }
+    
+    private func signInWithTwitter() {
+        isLoading = true
+        errorMessage = nil
+        
+        Task {
+            do {
+                try await authService.signInWithTwitter()
+            } catch {
+                await MainActor.run {
+                    errorMessage = error.localizedDescription
+                    isLoading = false
+                }
+            }
+        }
+    }
+    
+    private func handleAppleSignIn(_ result: Result<ASAuthorization, Error>) {
+        isLoading = true
+        errorMessage = nil
+        
+        Task {
+            do {
+                switch result {
+                case .success(let authorization):
+                    try await authService.signInWithApple(authorization: authorization)
+                case .failure(let error):
+                    throw error
+                }
+            } catch {
+                await MainActor.run {
+                    errorMessage = error.localizedDescription
+                    isLoading = false
+                }
+            }
+        }
+    }
+}
+
+// MARK: - Email Sign In Sheet
+
+struct EmailSignInView: View {
+    let authService: AuthService
+    @Environment(\.dismiss) private var dismiss
+    
+    @State private var email = ""
+    @State private var password = ""
+    @State private var isSignUp = false
+    @State private var isLoading = false
+    @State private var errorMessage: String?
+    
+    var body: some View {
+        NavigationView {
+            VStack(spacing: 24) {
+                VStack(spacing: 16) {
+                    TextField("Email", text: $email)
+                        .textFieldStyle(RoundedBorderTextFieldStyle())
+                        .keyboardType(.emailAddress)
+                        .autocapitalization(.none)
+                    
+                    SecureField("Password", text: $password)
+                        .textFieldStyle(RoundedBorderTextFieldStyle())
+                }
+                .padding(.horizontal)
+                
+                Button(action: handleEmailAuth) {
+                    Text(isSignUp ? "Create Account" : "Sign In")
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 50)
+                        .background(Color.blue)
+                        .foregroundColor(.white)
+                        .cornerRadius(25)
+                }
+                .padding(.horizontal)
+                .disabled(isLoading || email.isEmpty || password.isEmpty)
+                
+                Button(isSignUp ? "Already have an account? Sign In" : "Don't have an account? Sign Up") {
+                    isSignUp.toggle()
+                }
+                .font(.subheadline)
+                .foregroundColor(.blue)
+                
+                Spacer()
+            }
+            .navigationTitle(isSignUp ? "Create Account" : "Sign In")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarLeading) {
+                    Button("Cancel") {
+                        dismiss()
+                    }
+                }
+            }
+            .alert("Error", isPresented: .constant(errorMessage != nil)) {
+                Button("OK") {
+                    errorMessage = nil
+                }
+            } message: {
+                Text(errorMessage ?? "")
+            }
+        }
+    }
+    
+    private func handleEmailAuth() {
+        isLoading = true
+        errorMessage = nil
+        
+        Task {
+            do {
+                if isSignUp {
+                    try await authService.signUp(email: email, password: password)
+                } else {
+                    try await authService.signIn(email: email, password: password)
+                }
+                await MainActor.run {
+                    dismiss()
+                }
+            } catch {
+                await MainActor.run {
+                    errorMessage = error.localizedDescription
+                    isLoading = false
+                }
+            }
+        }
+    }
+}
+
+#Preview {
+    GamerAuthView()
+}

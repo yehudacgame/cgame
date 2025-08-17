@@ -1,0 +1,228 @@
+import SwiftUI
+
+struct GamingProfilesView: View {
+    @StateObject private var authService = AuthService()
+    @State private var gamingProfiles: [GamingProfile] = []
+    @State private var showingAddProfile = false
+    @State private var isLoading = false
+    @State private var errorMessage: String?
+    
+    var body: some View {
+        NavigationView {
+            List {
+                Section {
+                    ForEach(gamingProfiles) { profile in
+                        GamingProfileRow(profile: profile) {
+                            removeProfile(profile)
+                        }
+                    }
+                    .onDelete(perform: deleteProfiles)
+                    
+                    if gamingProfiles.isEmpty {
+                        Text("No gaming profiles linked")
+                            .foregroundColor(.secondary)
+                            .italic()
+                    }
+                } header: {
+                    Text("Linked Gaming Accounts")
+                } footer: {
+                    Text("Link your gaming accounts to showcase your achievements and connect with friends.")
+                }
+                
+                Section {
+                    Button(action: { showingAddProfile = true }) {
+                        Label("Add Gaming Profile", systemImage: "plus.circle.fill")
+                            .foregroundColor(.blue)
+                    }
+                }
+            }
+            .navigationTitle("Gaming Profiles")
+            .refreshable {
+                await loadGamingProfiles()
+            }
+            .sheet(isPresented: $showingAddProfile) {
+                AddGamingProfileView { platform, username in
+                    await addGamingProfile(platform: platform, username: username)
+                }
+            }
+            .alert("Error", isPresented: .constant(errorMessage != nil)) {
+                Button("OK") {
+                    errorMessage = nil
+                }
+            } message: {
+                Text(errorMessage ?? "")
+            }
+        }
+        .task {
+            await loadGamingProfiles()
+        }
+    }
+    
+    private func loadGamingProfiles() async {
+        isLoading = true
+        do {
+            let profiles = try await authService.getGamingProfiles()
+            await MainActor.run {
+                self.gamingProfiles = profiles
+                isLoading = false
+            }
+        } catch {
+            await MainActor.run {
+                errorMessage = error.localizedDescription
+                isLoading = false
+            }
+        }
+    }
+    
+    private func addGamingProfile(platform: GamingPlatform, username: String) async {
+        do {
+            try await authService.linkGamingProfile(platform: platform, username: username)
+            await loadGamingProfiles()
+        } catch {
+            await MainActor.run {
+                errorMessage = error.localizedDescription
+            }
+        }
+    }
+    
+    private func removeProfile(_ profile: GamingProfile) {
+        Task {
+            do {
+                // Note: This would require the profile ID from Firestore
+                // For now, reload to refresh the list
+                await loadGamingProfiles()
+            } catch {
+                await MainActor.run {
+                    errorMessage = error.localizedDescription
+                }
+            }
+        }
+    }
+    
+    private func deleteProfiles(offsets: IndexSet) {
+        // Remove from local array - in real implementation, also remove from Firestore
+        gamingProfiles.remove(atOffsets: offsets)
+    }
+}
+
+struct GamingProfileRow: View {
+    let profile: GamingProfile
+    let onDelete: () -> Void
+    
+    var body: some View {
+        HStack {
+            // Platform icon
+            Image(systemName: profile.platform.iconName)
+                .foregroundColor(colorForPlatform(profile.platform))
+                .font(.title2)
+                .frame(width: 30)
+            
+            VStack(alignment: .leading, spacing: 4) {
+                Text(profile.platform.displayName)
+                    .font(.headline)
+                
+                Text(profile.username)
+                    .font(.subheadline)
+                    .foregroundColor(.secondary)
+                
+                Text("Linked \(formatDate(profile.linkedAt))")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+            
+            Spacer()
+            
+            Button(action: onDelete) {
+                Image(systemName: "trash")
+                    .foregroundColor(.red)
+            }
+        }
+        .padding(.vertical, 4)
+    }
+    
+    private func colorForPlatform(_ platform: GamingPlatform) -> Color {
+        switch platform {
+        case .steam: return .blue
+        case .epicGames: return .black
+        case .xbox: return .green
+        case .playstation: return .blue
+        case .nintendo: return .red
+        case .battleNet: return .blue
+        case .discord: return .purple
+        case .twitch: return .purple
+        case .riot: return .red
+        case .activision: return .orange
+        }
+    }
+    
+    private func formatDate(_ date: Date) -> String {
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .abbreviated
+        return formatter.localizedString(for: date, relativeTo: Date())
+    }
+}
+
+struct AddGamingProfileView: View {
+    let onAdd: (GamingPlatform, String) async -> Void
+    @Environment(\.dismiss) private var dismiss
+    
+    @State private var selectedPlatform: GamingPlatform = .steam
+    @State private var username = ""
+    @State private var isLoading = false
+    
+    var body: some View {
+        NavigationView {
+            Form {
+                Section {
+                    Picker("Platform", selection: $selectedPlatform) {
+                        ForEach(GamingPlatform.allCases, id: \.self) { platform in
+                            HStack {
+                                Image(systemName: platform.iconName)
+                                Text(platform.displayName)
+                            }
+                            .tag(platform)
+                        }
+                    }
+                    .pickerStyle(MenuPickerStyle())
+                    
+                    TextField("Username", text: $username)
+                        .autocapitalization(.none)
+                } header: {
+                    Text("Gaming Account Details")
+                } footer: {
+                    Text("Enter your username or gamertag for the selected platform.")
+                }
+                
+                Section {
+                    Button("Add Profile") {
+                        addProfile()
+                    }
+                    .disabled(username.isEmpty || isLoading)
+                }
+            }
+            .navigationTitle("Add Gaming Profile")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarLeading) {
+                    Button("Cancel") {
+                        dismiss()
+                    }
+                }
+            }
+        }
+    }
+    
+    private func addProfile() {
+        isLoading = true
+        Task {
+            await onAdd(selectedPlatform, username)
+            await MainActor.run {
+                dismiss()
+            }
+        }
+    }
+}
+
+#Preview {
+    GamingProfilesView()
+}
