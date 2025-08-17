@@ -3,6 +3,7 @@ import SwiftUI
 struct CODSettingsView: View {
     @State private var preRollDuration: Double = 5.0
     @State private var postRollDuration: Double = 3.0
+    @State private var killCooldownSeconds: Double = 5.0
     @State private var detectionSensitivity: DetectionSensitivity = .balanced
     @State private var storageUsed: String = "Calculating..."
     @State private var showDebugInfo: Bool = false
@@ -100,6 +101,17 @@ struct CODSettingsView: View {
                         Slider(value: $postRollDuration, in: 1...10, step: 1)
                             .accentColor(.cgameOrange)
                         
+                        Divider()
+
+                        HStack {
+                            Text("Multi-kill Cooldown")
+                            Spacer()
+                            Text("\(Int(killCooldownSeconds))s")
+                                .foregroundColor(.secondary)
+                        }
+                        Slider(value: $killCooldownSeconds, in: 1...15, step: 1)
+                            .accentColor(.cgameOrange)
+
                         Text("Total clip length: ~\(Int(preRollDuration + postRollDuration + 2))s per kill")
                             .font(.caption)
                             .foregroundColor(.secondary)
@@ -107,7 +119,7 @@ struct CODSettingsView: View {
                 } header: {
                     Text("Clip Settings")
                 } footer: {
-                    Text("Pre-roll captures gameplay before the kill. Post-roll captures the aftermath.")
+                    Text("Pre-roll captures gameplay before the kill. Post-roll captures the aftermath. Cooldown groups multiple kills into a single clip.")
                 }
                 
                 // Storage Section
@@ -252,6 +264,7 @@ struct CODSettingsView: View {
             }
             .onChange(of: preRollDuration) { _ in saveSettings() }
             .onChange(of: postRollDuration) { _ in saveSettings() }
+            .onChange(of: killCooldownSeconds) { _ in saveSettings() }
             .onChange(of: detectionSensitivity) { _ in saveSettings() }
         }
     }
@@ -264,6 +277,9 @@ struct CODSettingsView: View {
         
         postRollDuration = appGroupDefaults.double(forKey: "postRollDuration")
         if postRollDuration == 0 { postRollDuration = 3.0 }
+
+        killCooldownSeconds = appGroupDefaults.double(forKey: "killCooldownSeconds")
+        if killCooldownSeconds == 0 { killCooldownSeconds = 5.0 }
         
         if let sensitivityString = appGroupDefaults.string(forKey: "detectionSensitivity"),
            let sensitivity = DetectionSensitivity(rawValue: sensitivityString) {
@@ -277,10 +293,11 @@ struct CODSettingsView: View {
         appGroupDefaults.set("CallOfDuty", forKey: "selectedProfile")
         appGroupDefaults.set(preRollDuration, forKey: "preRollDuration")
         appGroupDefaults.set(postRollDuration, forKey: "postRollDuration")
+        appGroupDefaults.set(killCooldownSeconds, forKey: "killCooldownSeconds")
         appGroupDefaults.set(detectionSensitivity.rawValue, forKey: "detectionSensitivity")
         appGroupDefaults.synchronize()
         
-        print("⚙️ Settings saved: Pre-roll: \(preRollDuration)s, Post-roll: \(postRollDuration)s")
+        print("⚙️ Settings saved: Pre-roll: \(preRollDuration)s, Post-roll: \(postRollDuration)s, Cooldown: \(killCooldownSeconds)s")
     }
     
     private func calculateStorageUsage() {

@@ -118,14 +118,21 @@ class ClipsViewModel: ObservableObject {
     private func processSessionInfo(_ sessionInfo: (sessionURL: URL, killEvents: [(Date, Double, String)])) async {
         NSLog("🎬 ClipsViewModel: Processing session with \(sessionInfo.killEvents.count) kills")
         await MainActor.run { self.isLoading = true }
+
+        // Group kills into multi-kill windows based on cooldown from settings
+        let settings = readClipSettings()
+        let groups = groupKillsByCooldown(sessionInfo.killEvents, cooldownSeconds: settings.cooldownSeconds)
+        NSLog("🎯 ClipsViewModel: Grouped into \(groups.count) clip(s) with cooldown=\(settings.cooldownSeconds)s")
+
         var processedClipCount = 0
-        for (index, killEvent) in sessionInfo.killEvents.enumerated() {
-            if await createKillClipFromSessionInfo(sessionURL: sessionInfo.sessionURL, killEvent: killEvent, index: index + 1) {
+        for (index, group) in groups.enumerated() {
+            if await createGroupKillClip(sessionURL: sessionInfo.sessionURL, killGroup: group, groupIndex: index + 1, settings: settings) {
                 processedClipCount += 1
             }
         }
+
         AppGroupManager.shared.clearPendingSessionInfo()
-        if processedClipCount == sessionInfo.killEvents.count {
+        if processedClipCount == groups.count {
             try? FileManager.default.removeItem(at: sessionInfo.sessionURL)
             NSLog("🗑️ ClipsViewModel: Cleaned up session file: \(sessionInfo.sessionURL.lastPathComponent)")
         }
@@ -144,8 +151,8 @@ class ClipsViewModel: ObservableObject {
         do {
             let duration = try await asset.load(.duration)
             let sessionDurationSeconds = duration.seconds
-            let preRoll: Double = 5.0
-            let postRoll: Double = 3.0
+            let preRoll: Double = readClipSettings().preRollSeconds
+            let postRoll: Double = readClipSettings().postRollSeconds
             let sessionStartDate = extractSessionStartFromFilename(sessionURL.lastPathComponent)
             let killOffsetInSession = killEvent.0.timeIntervalSince(sessionStartDate)
             let startTime = max(0, killOffsetInSession - preRoll)
@@ -304,4 +311,165 @@ class ClipsViewModel: ObservableObject {
     }
 }
 
+
+// MARK: - Multi-kill grouping helpers
+private extension ClipsViewModel {
+    struct ClipSettings {
+        let preRollSeconds: Double
+        let postRollSeconds: Double
+        let cooldownSeconds: Double
+    }
+
+    func readClipSettings() -> ClipSettings {
+        let defaults = UserDefaults(suiteName: "group.com.cgame.shared")
+        let pre = defaults?.double(forKey: "preRollDuration") ?? 5.0
+        let post = defaults?.double(forKey: "postRollDuration") ?? 3.0
+        let cooldown = defaults?.double(forKey: "killCooldownSeconds") ?? 5.0
+        return ClipSettings(preRollSeconds: pre == 0 ? 5.0 : pre,
+                            postRollSeconds: post == 0 ? 3.0 : post,
+                            cooldownSeconds: cooldown == 0 ? 5.0 : cooldown)
+    }
+
+    typealias KillEvent = (Date, Double, String)
+
+    func groupKillsByCooldown(_ kills: [KillEvent], cooldownSeconds: Double) -> [[KillEvent]] {
+        guard !kills.isEmpty else { return [] }
+        let sorted = kills.sorted { $0.0 < $1.0 }
+        var groups: [[KillEvent]] = []
+        var current: [KillEvent] = [sorted[0]]
+        for i in 1..<sorted.count {
+            let prev = sorted[i-1].0
+            let cur = sorted[i].0
+            if cur.timeIntervalSince(prev) <= cooldownSeconds {
+                current.append(sorted[i])
+            } else {
+                groups.append(current)
+                current = [sorted[i]]
+            }
+        }
+        groups.append(current)
+        return groups
+    }
+
+    func multiKillLabel(for count: Int) -> String {
+        switch count {
+        case 2: return "Double Kill"
+        case 3: return "Triple Kill"
+        case 4: return "Quad Kill"
+        case 5: return "Penta Kill"
+        default:
+            return count >= 6 ? "Multi Kill x\(count)" : "Kill"
+        }
+    }
+
+    func createGroupKillClip(sessionURL: URL, killGroup: [KillEvent], groupIndex: Int, settings: ClipSettings) async -> Bool {
+        guard let resolvedURL = resolveAccessibleSessionURL(originalURL: sessionURL) else {
+            NSLog("❌ ClipsViewModel: Session file not found at original or fallback locations: \(sessionURL.lastPathComponent)")
+            return false
+        }
+        let asset = AVAsset(url: resolvedURL)
+        do {
+            let duration = try await asset.load(.duration)
+            let sessionDurationSeconds = duration.seconds
+
+            let sessionStartDate = extractSessionStartFromFilename(sessionURL.lastPathComponent)
+            guard let first = killGroup.first?.0, let last = killGroup.last?.0 else { return false }
+            let firstOffset = first.timeIntervalSince(sessionStartDate)
+            let lastOffset = last.timeIntervalSince(sessionStartDate)
+
+            let startTime = max(0, firstOffset - settings.preRollSeconds)
+            let endTime = min(sessionDurationSeconds, lastOffset + settings.postRollSeconds)
+            let clipStart = CMTime(seconds: startTime, preferredTimescale: 600)
+            let clipDuration = CMTime(seconds: endTime - startTime, preferredTimescale: 600)
+            let timeRange = CMTimeRange(start: clipStart, duration: clipDuration)
+
+            guard let clipsDir = AppGroupManager.shared.getClipsDirectory() else { return false }
+            let dateFormatter = DateFormatter()
+            dateFormatter.dateFormat = "yyyy-MM-dd_HH-mm-ss"
+            let timestamp = dateFormatter.string(from: first)
+            let suffix = killGroup.count >= 2 ? "_multi_\(killGroup.count)" : ""
+            let clipFilename = "killGroup_\(groupIndex)_\(timestamp)\(suffix).mp4"
+            let outputURL = clipsDir.appendingPathComponent(clipFilename)
+
+            guard let exportSession = AVAssetExportSession(asset: asset, presetName: AVAssetExportPresetHighestQuality) else { return false }
+            exportSession.outputURL = outputURL
+            exportSession.outputFileType = .mp4
+            exportSession.timeRange = timeRange
+
+            // Rotation fix
+            do {
+                if let videoTrack = try await asset.loadTracks(withMediaType: .video).first {
+                    let videoComposition = AVMutableVideoComposition()
+                    videoComposition.renderSize = CGSize(width: 1920, height: 888)
+                    videoComposition.frameDuration = CMTime(value: 1, timescale: 30)
+                    let instruction = AVMutableVideoCompositionInstruction()
+                    instruction.timeRange = timeRange
+                    let layerInstruction = AVMutableVideoCompositionLayerInstruction(assetTrack: videoTrack)
+                    let rotateTransform = CGAffineTransform(rotationAngle: -CGFloat.pi/2)
+                    let translateTransform = CGAffineTransform(translationX: 0, y: 888)
+                    let finalTransform = rotateTransform.concatenating(translateTransform)
+                    layerInstruction.setTransform(finalTransform, at: .zero)
+                    instruction.layerInstructions = [layerInstruction]
+                    videoComposition.instructions = [instruction]
+                    exportSession.videoComposition = videoComposition
+                }
+            } catch {
+                NSLog("⚠️ ClipsViewModel: Could not load video tracks for rotation fix: \(error)")
+            }
+
+            await exportSession.export()
+            guard exportSession.status == .completed else {
+                NSLog("❌ ClipsViewModel: Group clip export failed: \(exportSession.error?.localizedDescription ?? "Unknown")")
+                return false
+            }
+            NSLog("✅ ClipsViewModel: Group clip #\(groupIndex) exported (kills=\(killGroup.count)): \(clipFilename)")
+
+            #if canImport(FirebaseCore)
+            if FirebaseApp.app() != nil {
+                do {
+                    let clipId = clipFilename.replacingOccurrences(of: ".mp4", with: "")
+                    let userId = await resolveUserIdForCloud()
+                    NSLog("☁️ ClipsViewModel: Preparing cloud upload for userId=\(userId), clipId=\(clipId)")
+
+                    _ = try await StorageService.shared.uploadClip(from: outputURL, clipId: clipId, userId: userId)
+
+                    let thumbGenerator = AVAssetImageGenerator(asset: asset)
+                    thumbGenerator.appliesPreferredTrackTransform = true
+                    let thumbTime = CMTime(seconds: max(0.5, startTime + 1.0), preferredTimescale: 600)
+                    var thumbnailURLString = ""
+                    if let cgImage = try? thumbGenerator.copyCGImage(at: thumbTime, actualTime: nil) {
+                        let image = UIImage(cgImage: cgImage)
+                        if let jpegData = image.jpegData(compressionQuality: 0.8) {
+                            thumbnailURLString = try await StorageService.shared.uploadThumbnail(from: jpegData, clipId: clipId, userId: userId)
+                        }
+                    }
+
+                    #if canImport(FirebaseFirestore)
+                    let db = Firestore.firestore()
+                    let label = multiKillLabel(for: killGroup.count)
+                    try await db.collection("users").document(userId).collection("clips").document(clipId).setData([
+                        "game": "Call of Duty",
+                        "events": killGroup.count >= 2 ? [label] : ["Kill"],
+                        "kills": killGroup.count,
+                        "timestamp": Timestamp(date: first),
+                        "duration": endTime - startTime,
+                        "storagePath": "clips/\(userId)/\(clipId).mp4",
+                        "thumbnailURL": thumbnailURLString,
+                        "cooldownSeconds": settings.cooldownSeconds
+                    ])
+                    NSLog("✅ ClipsViewModel: Cloud metadata saved for group clipId=\(clipId), label=\(label)")
+                    #endif
+                } catch {
+                    NSLog("⚠️ ClipsViewModel: Cloud upload failed for group clip #\(groupIndex): \(error.localizedDescription)")
+                }
+            }
+            #endif
+
+            return true
+        } catch {
+            NSLog("❌ ClipsViewModel: Failed to load asset duration: \(error)")
+            return false
+        }
+    }
+}
 
