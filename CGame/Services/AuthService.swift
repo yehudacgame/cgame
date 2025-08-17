@@ -1,5 +1,8 @@
 import Foundation
 import SwiftUI
+#if canImport(FirebaseAuth)
+import FirebaseAuth
+#endif
 
 // Hybrid AuthService that works with or without Firebase
 class AuthService: ObservableObject {
@@ -22,8 +25,21 @@ class AuthService: ObservableObject {
     
     private func checkFirebaseAvailability() {
         if Bundle.main.path(forResource: "GoogleService-Info", ofType: "plist") != nil {
-            print("🔥 Firebase configuration detected! Cloud features will be available.")
-            // TODO: Initialize Firebase when GoogleService-Info.plist is present
+            print("🔥 Firebase configuration detected! Enabling Firebase Auth listener.")
+            #if canImport(FirebaseAuth)
+            Auth.auth().addStateDidChangeListener { [weak self] _, user in
+                guard let self else { return }
+                if let user = user {
+                    self.currentUser = User(id: user.uid, email: user.email ?? "user@cgame.app", createdAt: Date())
+                    self.isAuthenticated = true
+                } else {
+                    // Anonymous sign-in for now
+                    Task { try? await Auth.auth().signInAnonymously() }
+                }
+            }
+            #else
+            print("ℹ️ FirebaseAuth not linked; staying in local auth mode.")
+            #endif
         } else {
             print("📱 Running in local mode. Add GoogleService-Info.plist for cloud features.")
         }
