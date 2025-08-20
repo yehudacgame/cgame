@@ -1,14 +1,19 @@
 import SwiftUI
+import UIKit
 
 struct CODSettingsView: View {
     @State private var preRollDuration: Double = 5.0
     @State private var postRollDuration: Double = 3.0
     @State private var killCooldownSeconds: Double = 5.0
+    @State private var targetFrameRateIs60: Bool = false
     @State private var detectionSensitivity: DetectionSensitivity = .balanced
     @State private var storageUsed: String = "Calculating..."
     @State private var showDebugInfo: Bool = false
     @State private var selectedConfigPreset: ConfigManager.PredefinedConfigType = .default
     @State private var currentConfig: DetectionConfig = ConfigManager.shared.getCurrentConfig()
+    struct ShareItem: Identifiable { let id = UUID(); let url: URL }
+    @State private var shareItem: ShareItem?
+    @State private var exportError: String?
     
     enum DetectionSensitivity: String, CaseIterable {
         case low = "Low"
@@ -78,6 +83,20 @@ struct CODSettingsView: View {
                     }
                 } header: {
                     Text("Kill Detection")
+                }
+
+                // Encoding / Frame Rate
+                Section {
+                    Toggle(isOn: $targetFrameRateIs60) {
+                        VStack(alignment: .leading) {
+                            Text("Record at 60 FPS")
+                            Text("If off, records at 30 FPS. Hardware encoder is required on iOS 17.4+ for raw input.")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                } header: {
+                    Text("Recording Frame Rate")
                 }
                 
                 // Clip Duration Settings
@@ -233,6 +252,10 @@ struct CODSettingsView: View {
                     Button("Test Kill Detection") {
                         testKillDetection()
                     }
+
+                    Button("Export error.log to Files…") {
+                        exportErrorLog()
+                    }
                 } header: {
                     Text("Debug & Testing")
                 }
@@ -266,6 +289,15 @@ struct CODSettingsView: View {
             .onChange(of: postRollDuration) { _ in saveSettings() }
             .onChange(of: killCooldownSeconds) { _ in saveSettings() }
             .onChange(of: detectionSensitivity) { _ in saveSettings() }
+            .onChange(of: targetFrameRateIs60) { _ in saveSettings() }
+        }
+        .sheet(item: $shareItem) { item in
+            ActivityViewController(activityItems: [item.url])
+        }
+        .alert("Export Failed", isPresented: Binding(get: { exportError != nil }, set: { _ in exportError = nil })) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(exportError ?? "Unknown error")
         }
     }
     
@@ -280,6 +312,8 @@ struct CODSettingsView: View {
 
         killCooldownSeconds = appGroupDefaults.double(forKey: "killCooldownSeconds")
         if killCooldownSeconds == 0 { killCooldownSeconds = 5.0 }
+        let fps = appGroupDefaults.integer(forKey: "targetFrameRate")
+        targetFrameRateIs60 = (fps == 60)
         
         if let sensitivityString = appGroupDefaults.string(forKey: "detectionSensitivity"),
            let sensitivity = DetectionSensitivity(rawValue: sensitivityString) {
@@ -294,6 +328,7 @@ struct CODSettingsView: View {
         appGroupDefaults.set(preRollDuration, forKey: "preRollDuration")
         appGroupDefaults.set(postRollDuration, forKey: "postRollDuration")
         appGroupDefaults.set(killCooldownSeconds, forKey: "killCooldownSeconds")
+        appGroupDefaults.set(targetFrameRateIs60 ? 60 : 30, forKey: "targetFrameRate")
         appGroupDefaults.set(detectionSensitivity.rawValue, forKey: "detectionSensitivity")
         appGroupDefaults.synchronize()
         
@@ -363,6 +398,55 @@ struct CODSettingsView: View {
             print("Testing '\(phrase)' → \(shouldDetect ? "✅ DETECTED" : "❌ Not detected")")
         }
     }
+
+    private func exportErrorLog() {
+        // Locate the App Group error.log written by the extension
+        guard let container = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: "group.com.cgame.shared") else {
+            exportError = "App Group container unavailable."
+            return
+        }
+        let debugDir = container.appendingPathComponent("Debug")
+        var logURL = debugDir.appendingPathComponent("error.log")
+        if !FileManager.default.fileExists(atPath: logURL.path) {
+            // Fallback: pick the newest error_*.log
+            do {
+                let files = try FileManager.default.contentsOfDirectory(at: debugDir, includingPropertiesForKeys: [.contentModificationDateKey], options: [.skipsHiddenFiles])
+                let errorLogs = files.filter { $0.lastPathComponent.hasPrefix("error_") && $0.pathExtension == "log" }
+                if let newest = errorLogs.sorted(by: { (a, b) -> Bool in
+                    let aDate = (try? a.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? Date.distantPast
+                    let bDate = (try? b.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? Date.distantPast
+                    return aDate > bDate
+                }).first {
+                    logURL = newest
+                } else {
+                    exportError = "No error logs found yet. Run a session first."
+                    return
+                }
+            } catch {
+                exportError = "Failed to locate logs: \(error.localizedDescription)"
+                return
+            }
+        }
+        // Copy to a temporary location with a friendly name for sharing
+        let tmp = FileManager.default.temporaryDirectory
+        let dateStr = makeDateString()
+        let exportURL = tmp.appendingPathComponent("cgame_error_\(dateStr).log")
+        do {
+            if FileManager.default.fileExists(atPath: exportURL.path) {
+                try FileManager.default.removeItem(at: exportURL)
+            }
+            try FileManager.default.copyItem(at: logURL, to: exportURL)
+            self.shareItem = ShareItem(url: exportURL)
+        } catch {
+            exportError = "Failed to prepare export: \(error.localizedDescription)"
+        }
+    }
+    
+    private func makeDateString() -> String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd_HH-mm-ss"
+        return formatter.string(from: Date())
+    }
 }
 
 struct DebugInfoRow: View {
@@ -378,4 +462,13 @@ struct DebugInfoRow: View {
                 .fontWeight(.medium)
         }
     }
+}
+
+// Lightweight UIActivityViewController wrapper local to this file
+struct ActivityViewController: UIViewControllerRepresentable {
+    let activityItems: [Any]
+    func makeUIViewController(context: Context) -> UIActivityViewController {
+        UIActivityViewController(activityItems: activityItems, applicationActivities: nil)
+    }
+    func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {}
 }

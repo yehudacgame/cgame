@@ -20,6 +20,9 @@ class ClipsViewModel: ObservableObject {
     @Published var clips: [Clip] = []
     @Published var isLoading = false
     @Published var errorMessage: String?
+    @Published var isProcessingClips = false
+    @Published var processingCompletedCount: Int = 0
+    @Published var processingTotalCount: Int = 0
     
     private var processingTimer: DispatchSourceTimer?
     private let processingQueue = DispatchQueue(label: "com.cgame.clips-processing", qos: .userInitiated)
@@ -83,8 +86,8 @@ class ClipsViewModel: ObservableObject {
     func deleteClip(_ clip: Clip) {
         if let localURL = clip.localURL {
             try? FileManager.default.removeItem(at: localURL)
-            if let index = clips.firstIndex(where: { $0.id == clip.id }) {
-                clips.remove(at: index)
+                if let index = clips.firstIndex(where: { $0.id == clip.id }) {
+                    clips.remove(at: index)
             }
         }
     }
@@ -117,26 +120,34 @@ class ClipsViewModel: ObservableObject {
     
     private func processSessionInfo(_ sessionInfo: (sessionURL: URL, killEvents: [(Date, Double, String)])) async {
         NSLog("🎬 ClipsViewModel: Processing session with \(sessionInfo.killEvents.count) kills")
-        await MainActor.run { self.isLoading = true }
+        await MainActor.run {
+            self.isProcessingClips = true
+            self.processingCompletedCount = 0
+        }
 
         // Group kills into multi-kill windows based on cooldown from settings
         let settings = readClipSettings()
         let groups = groupKillsByCooldown(sessionInfo.killEvents, cooldownSeconds: settings.cooldownSeconds)
         NSLog("🎯 ClipsViewModel: Grouped into \(groups.count) clip(s) with cooldown=\(settings.cooldownSeconds)s")
+        await MainActor.run { self.processingTotalCount = groups.count }
 
         var processedClipCount = 0
         for (index, group) in groups.enumerated() {
             if await createGroupKillClip(sessionURL: sessionInfo.sessionURL, killGroup: group, groupIndex: index + 1, settings: settings) {
                 processedClipCount += 1
             }
+            await MainActor.run { self.processingCompletedCount = processedClipCount }
         }
-
+        
         AppGroupManager.shared.clearPendingSessionInfo()
         if processedClipCount == groups.count {
             try? FileManager.default.removeItem(at: sessionInfo.sessionURL)
             NSLog("🗑️ ClipsViewModel: Cleaned up session file: \(sessionInfo.sessionURL.lastPathComponent)")
         }
-        await MainActor.run { self.loadClips() }
+        await MainActor.run {
+            self.isProcessingClips = false
+            self.loadClips()
+        }
     }
     
     private func createKillClipFromSessionInfo(sessionURL: URL, killEvent: (Date, Double, String), index: Int) async -> Bool {
@@ -172,29 +183,29 @@ class ClipsViewModel: ObservableObject {
             exportSession.outputURL = outputURL
             exportSession.outputFileType = .mp4
             exportSession.timeRange = timeRange
-            
+        
             // COD Mobile rotation fix (landscape in portrait)
-            do {
-                if let videoTrack = try await asset.loadTracks(withMediaType: .video).first {
-                    let videoComposition = AVMutableVideoComposition()
+        do {
+            if let videoTrack = try await asset.loadTracks(withMediaType: .video).first {
+                let videoComposition = AVMutableVideoComposition()
                     videoComposition.renderSize = CGSize(width: 1920, height: 888)
-                    videoComposition.frameDuration = CMTime(value: 1, timescale: 30)
-                    let instruction = AVMutableVideoCompositionInstruction()
-                    instruction.timeRange = timeRange
-                    let layerInstruction = AVMutableVideoCompositionLayerInstruction(assetTrack: videoTrack)
-                    let rotateTransform = CGAffineTransform(rotationAngle: -CGFloat.pi/2)
-                    let translateTransform = CGAffineTransform(translationX: 0, y: 888)
-                    let finalTransform = rotateTransform.concatenating(translateTransform)
-                    layerInstruction.setTransform(finalTransform, at: .zero)
-                    instruction.layerInstructions = [layerInstruction]
-                    videoComposition.instructions = [instruction]
-                    exportSession.videoComposition = videoComposition
-                }
-            } catch {
-                NSLog("⚠️ ClipsViewModel: Could not load video tracks for rotation fix: \(error)")
+                videoComposition.frameDuration = CMTime(value: 1, timescale: 30)
+                let instruction = AVMutableVideoCompositionInstruction()
+                instruction.timeRange = timeRange
+                let layerInstruction = AVMutableVideoCompositionLayerInstruction(assetTrack: videoTrack)
+                let rotateTransform = CGAffineTransform(rotationAngle: -CGFloat.pi/2)
+                let translateTransform = CGAffineTransform(translationX: 0, y: 888)
+                let finalTransform = rotateTransform.concatenating(translateTransform)
+                layerInstruction.setTransform(finalTransform, at: .zero)
+                instruction.layerInstructions = [layerInstruction]
+                videoComposition.instructions = [instruction]
+                exportSession.videoComposition = videoComposition
             }
-            
-            await exportSession.export()
+        } catch {
+            NSLog("⚠️ ClipsViewModel: Could not load video tracks for rotation fix: \(error)")
+        }
+        
+        await exportSession.export()
             switch exportSession.status {
             case .completed:
                 NSLog("✅ ClipsViewModel: Kill clip #\(index) exported: \(clipFilename)")
@@ -278,7 +289,7 @@ class ClipsViewModel: ObservableObject {
         return "anonymous"
         #endif
     }
-
+    
     private func extractSessionStartFromFilename(_ filename: String) -> Date {
         let components = filename.replacingOccurrences(of: "session_", with: "").replacingOccurrences(of: ".mp4", with: "")
         let dateFormatter = DateFormatter()
@@ -286,7 +297,7 @@ class ClipsViewModel: ObservableObject {
         dateFormatter.timeZone = TimeZone.current
         return dateFormatter.date(from: components) ?? Date()
     }
-
+    
     private func resolveAccessibleSessionURL(originalURL: URL) -> URL? {
         // First, check the original path
         if FileManager.default.fileExists(atPath: originalURL.path) { return originalURL }
@@ -399,19 +410,19 @@ private extension ClipsViewModel {
             // Rotation fix
             do {
                 if let videoTrack = try await asset.loadTracks(withMediaType: .video).first {
-                    let videoComposition = AVMutableVideoComposition()
+            let videoComposition = AVMutableVideoComposition()
                     videoComposition.renderSize = CGSize(width: 1920, height: 888)
-                    videoComposition.frameDuration = CMTime(value: 1, timescale: 30)
-                    let instruction = AVMutableVideoCompositionInstruction()
+            videoComposition.frameDuration = CMTime(value: 1, timescale: 30)
+            let instruction = AVMutableVideoCompositionInstruction()
                     instruction.timeRange = timeRange
-                    let layerInstruction = AVMutableVideoCompositionLayerInstruction(assetTrack: videoTrack)
+            let layerInstruction = AVMutableVideoCompositionLayerInstruction(assetTrack: videoTrack)
                     let rotateTransform = CGAffineTransform(rotationAngle: -CGFloat.pi/2)
                     let translateTransform = CGAffineTransform(translationX: 0, y: 888)
-                    let finalTransform = rotateTransform.concatenating(translateTransform)
-                    layerInstruction.setTransform(finalTransform, at: .zero)
-                    instruction.layerInstructions = [layerInstruction]
-                    videoComposition.instructions = [instruction]
-                    exportSession.videoComposition = videoComposition
+            let finalTransform = rotateTransform.concatenating(translateTransform)
+            layerInstruction.setTransform(finalTransform, at: .zero)
+            instruction.layerInstructions = [layerInstruction]
+            videoComposition.instructions = [instruction]
+            exportSession.videoComposition = videoComposition
                 }
             } catch {
                 NSLog("⚠️ ClipsViewModel: Could not load video tracks for rotation fix: \(error)")

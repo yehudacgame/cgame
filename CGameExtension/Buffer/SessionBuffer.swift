@@ -2,6 +2,7 @@ import Foundation
 import AVFoundation
 import CoreMedia
 import CoreGraphics
+import VideoToolbox
 
 // Minimal App Group helper local to the extension target
 private struct ExtAppGroupSession {
@@ -46,11 +47,37 @@ class SessionBuffer {
     private let bufferQueue = DispatchQueue(label: "com.cgame.sessionbuffer", qos: .userInitiated)
     private let bitRate: Int = 4_000_000 // 4Mbps - good balance of quality and file size
     
+    // Simple helper to mirror diagnostics into App Group error.log
+    private func writeSharedLog(_ message: String) {
+        if let container = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: "group.com.cgame.shared") {
+            let dir = container.appendingPathComponent("Debug", isDirectory: true)
+            try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            let url = dir.appendingPathComponent("error.log")
+            let ts = ISO8601DateFormatter().string(from: Date())
+            let line = "[EXT] \(ts) \(message)\n"
+            if let data = line.data(using: .utf8) {
+                if FileManager.default.fileExists(atPath: url.path) {
+                    if let h = try? FileHandle(forWritingTo: url) { h.seekToEndOfFile(); h.write(data); try? h.close() }
+                } else {
+                    try? data.write(to: url)
+                }
+            }
+        }
+    }
+    
     // Single continuous recording
     private var writer: AVAssetWriter?
     private var videoInput: AVAssetWriterInput?
     private var audioInput: AVAssetWriterInput?
+    private var compressionSession: VTCompressionSession?
     private var isRecording = false
+    private var baseVideoPTS: CMTime = .invalid
+    private var forcedKeyframeSent: Bool = false
+    // Append counters for diagnostics
+    private var videoSamplesAppended: Int = 0
+    private var videoSamplesFailed: Int = 0
+    private var audioSamplesAppended: Int = 0
+    private var audioSamplesFailed: Int = 0
     
     // Session data
     private var sessionStartTime: Date?
@@ -63,11 +90,25 @@ class SessionBuffer {
     
     init() {
         // Create session file URL
-        let appGroupURL = FileManager.default.containerURL(
+        guard let appGroupURL = FileManager.default.containerURL(
             forSecurityApplicationGroupIdentifier: "group.com.cgame.shared"
-        )!
+        ) else {
+            NSLog("❌ SessionBuffer: Failed to access App Group container")
+            // Fallback to tmp directory to prevent crash
+            let tmpDir = FileManager.default.temporaryDirectory
+            let dateFormatter = DateFormatter()
+            dateFormatter.dateFormat = "yyyy-MM-dd_HH-mm-ss"
+            let timestamp = dateFormatter.string(from: Date())
+            self.sessionURL = tmpDir.appendingPathComponent("session_\(timestamp).mp4")
+            return
+        }
+        
         let sessionDir = appGroupURL.appendingPathComponent("Sessions")
-        try? FileManager.default.createDirectory(at: sessionDir, withIntermediateDirectories: true)
+        do {
+            try FileManager.default.createDirectory(at: sessionDir, withIntermediateDirectories: true)
+        } catch {
+            NSLog("❌ SessionBuffer: Failed to create Sessions directory: \(error)")
+        }
         
         // Unique session file
         let dateFormatter = DateFormatter()
@@ -182,12 +223,122 @@ class SessionBuffer {
         // Write sample to appropriate input
         switch mediaType {
         case kCMMediaType_Video:
-            if let videoInput = videoInput, videoInput.isReadyForMoreMediaData {
-                videoInput.append(sample)
+            if let session = compressionSession {
+                if let pixelBuffer = CMSampleBufferGetImageBuffer(sample) {
+                    var pts = CMSampleBufferGetPresentationTimeStamp(sample)
+                    if CMTIME_IS_INVALID(baseVideoPTS) { baseVideoPTS = pts }
+                    pts = CMTimeSubtract(pts, baseVideoPTS)
+                    var frameProps: CFDictionary?
+                    if !forcedKeyframeSent {
+                        let dict: [NSString: Any] = [kVTEncodeFrameOptionKey_ForceKeyFrame: true]
+                        frameProps = dict as CFDictionary
+                        forcedKeyframeSent = true
+                    }
+                    let status = VTCompressionSessionEncodeFrame(session,
+                        imageBuffer: pixelBuffer,
+                        presentationTimeStamp: pts,
+                        duration: .invalid,
+                        frameProperties: frameProps,
+                        sourceFrameRefcon: UnsafeMutableRawPointer(Unmanaged.passUnretained(self).toOpaque()),
+                        infoFlagsOut: nil)
+                    if status != noErr {
+                        NSLog("❌ SessionBuffer: VTCompressionSessionEncodeFrame error=\(status)")
+                    } else {
+                        // Compressed sample will be appended in the output callback
+                    }
+                } else if let videoInput = videoInput {
+                    // Fallback: ReplayKit provided an already-compressed sample (no CVImageBuffer)
+                    // Remap timing to zero-based and append directly
+                    var timingCount: CMItemCount = 0
+                    CMSampleBufferGetSampleTimingInfoArray(sample, entryCount: 0, arrayToFill: nil, entriesNeededOut: &timingCount)
+                    var timingInfo = Array(repeating: CMSampleTimingInfo(duration: .invalid, presentationTimeStamp: .invalid, decodeTimeStamp: .invalid), count: timingCount)
+                    CMSampleBufferGetSampleTimingInfoArray(sample, entryCount: timingCount, arrayToFill: &timingInfo, entriesNeededOut: &timingCount)
+                    if CMTIME_IS_INVALID(baseVideoPTS) { baseVideoPTS = timingInfo.first?.presentationTimeStamp ?? .zero }
+                    for i in 0..<timingInfo.count {
+                        if CMTIME_IS_VALID(timingInfo[i].presentationTimeStamp) {
+                            timingInfo[i].presentationTimeStamp = CMTimeSubtract(timingInfo[i].presentationTimeStamp, baseVideoPTS)
+                        }
+                        if CMTIME_IS_VALID(timingInfo[i].decodeTimeStamp) {
+                            timingInfo[i].decodeTimeStamp = CMTimeSubtract(timingInfo[i].decodeTimeStamp, baseVideoPTS)
+                        }
+                    }
+                    var remappedSample: CMSampleBuffer?
+                    CMSampleBufferCreateCopyWithNewTiming(allocator: kCFAllocatorDefault, sampleBuffer: sample, sampleTimingEntryCount: timingCount, sampleTimingArray: &timingInfo, sampleBufferOut: &remappedSample)
+                    let sampleToAppend = remappedSample ?? sample
+                    if videoInput.append(sampleToAppend) {
+                        videoSamplesAppended += 1
+                    } else {
+                        videoSamplesFailed += 1
+                        let ready = videoInput.isReadyForMoreMediaData
+                        let msg = "SessionBuffer: videoInput.append(compressed-fallback) returned false (ready=\(ready) status=\(writer.status.rawValue) err=\(writer.error?.localizedDescription ?? "nil"))"
+                        NSLog("❌ \(msg)")
+                        writeSharedLog("❌ \(msg)")
+                    }
+                }
+            } else if let videoInput = videoInput {
+                // Remap PTS/DTS to start from zero for writer stability
+                var timingCount: CMItemCount = 0
+                CMSampleBufferGetSampleTimingInfoArray(sample, entryCount: 0, arrayToFill: nil, entriesNeededOut: &timingCount)
+                var timingInfo = Array(repeating: CMSampleTimingInfo(duration: .invalid, presentationTimeStamp: .invalid, decodeTimeStamp: .invalid), count: timingCount)
+                CMSampleBufferGetSampleTimingInfoArray(sample, entryCount: timingCount, arrayToFill: &timingInfo, entriesNeededOut: &timingCount)
+                if CMTIME_IS_INVALID(baseVideoPTS) { baseVideoPTS = timingInfo.first?.presentationTimeStamp ?? .zero }
+                for i in 0..<timingInfo.count {
+                    if CMTIME_IS_VALID(timingInfo[i].presentationTimeStamp) {
+                        timingInfo[i].presentationTimeStamp = CMTimeSubtract(timingInfo[i].presentationTimeStamp, baseVideoPTS)
+                    }
+                    if CMTIME_IS_VALID(timingInfo[i].decodeTimeStamp) {
+                        timingInfo[i].decodeTimeStamp = CMTimeSubtract(timingInfo[i].decodeTimeStamp, baseVideoPTS)
+                    }
+                }
+                var remappedSample: CMSampleBuffer?
+                CMSampleBufferCreateCopyWithNewTiming(allocator: kCFAllocatorDefault, sampleBuffer: sample, sampleTimingEntryCount: timingCount, sampleTimingArray: &timingInfo, sampleBufferOut: &remappedSample)
+                let sampleToAppend = remappedSample ?? sample
+                if videoInput.append(sampleToAppend) {
+                    videoSamplesAppended += 1
+                } else {
+                    videoSamplesFailed += 1
+                    let ready = videoInput.isReadyForMoreMediaData
+                    let msg = "SessionBuffer: videoInput.append returned false (ready=\(ready) status=\(writer.status.rawValue) err=\(writer.error?.localizedDescription ?? "nil"))"
+                    NSLog("❌ \(msg)")
+                    writeSharedLog("❌ \(msg)")
+                }
+            } else if videoInput == nil {
+                // If no VT session and we don't have a videoInput yet, create one with sourceFormatHint from this compressed sample
+                if let fmt = CMSampleBufferGetFormatDescription(sample) {
+                    let input = AVAssetWriterInput(mediaType: .video, outputSettings: nil, sourceFormatHint: fmt)
+                    input.expectsMediaDataInRealTime = true
+                    input.transform = CGAffineTransform(rotationAngle: -.pi/2)
+                    if writer.canAdd(input) { writer.add(input); videoInput = input }
+                }
             }
         case kCMMediaType_Audio:
-            if let audioInput = audioInput, audioInput.isReadyForMoreMediaData {
-                audioInput.append(sample)
+            if let audioInput = audioInput {
+                // Remap audio PTS/DTS to match zero-based timeline
+                var timingCount: CMItemCount = 0
+                CMSampleBufferGetSampleTimingInfoArray(sample, entryCount: 0, arrayToFill: nil, entriesNeededOut: &timingCount)
+                var timingInfo = Array(repeating: CMSampleTimingInfo(duration: .invalid, presentationTimeStamp: .invalid, decodeTimeStamp: .invalid), count: timingCount)
+                CMSampleBufferGetSampleTimingInfoArray(sample, entryCount: timingCount, arrayToFill: &timingInfo, entriesNeededOut: &timingCount)
+                if CMTIME_IS_INVALID(baseVideoPTS), let firstPTS = timingInfo.first?.presentationTimeStamp { baseVideoPTS = firstPTS }
+                for i in 0..<timingInfo.count {
+                    if CMTIME_IS_VALID(timingInfo[i].presentationTimeStamp) {
+                        timingInfo[i].presentationTimeStamp = CMTimeSubtract(timingInfo[i].presentationTimeStamp, baseVideoPTS)
+                    }
+                    if CMTIME_IS_VALID(timingInfo[i].decodeTimeStamp) {
+                        timingInfo[i].decodeTimeStamp = CMTimeSubtract(timingInfo[i].decodeTimeStamp, baseVideoPTS)
+                    }
+                }
+                var remappedSample: CMSampleBuffer?
+                CMSampleBufferCreateCopyWithNewTiming(allocator: kCFAllocatorDefault, sampleBuffer: sample, sampleTimingEntryCount: timingCount, sampleTimingArray: &timingInfo, sampleBufferOut: &remappedSample)
+                let sampleToAppend = remappedSample ?? sample
+                if audioInput.append(sampleToAppend) {
+                    audioSamplesAppended += 1
+                } else {
+                    audioSamplesFailed += 1
+                    let ready = audioInput.isReadyForMoreMediaData
+                    let msg = "SessionBuffer: audioInput.append returned false (ready=\(ready) status=\(writer.status.rawValue) err=\(writer.error?.localizedDescription ?? "nil"))"
+                    NSLog("❌ \(msg)")
+                    writeSharedLog("❌ \(msg)")
+                }
             }
         default:
             break
@@ -206,24 +357,87 @@ class SessionBuffer {
         let height = Int(dimensions.height)
         NSLog("📹 SessionBuffer: Video dimensions: \(width)x\(height)")
         
-        // Setup video input - 4Mbps bitrate
-        let videoSettings: [String: Any] = [
-            AVVideoCodecKey: AVVideoCodecType.h264,
-            AVVideoWidthKey: width,
-            AVVideoHeightKey: height,
-            AVVideoCompressionPropertiesKey: [
-                AVVideoAverageBitRateKey: bitRate,
-                AVVideoMaxKeyFrameIntervalKey: 60,
-                AVVideoProfileLevelKey: AVVideoProfileLevelH264HighAutoLevel,
-            ]
-        ]
+        // Read target FPS from settings (default 30)
+        let defaults = UserDefaults(suiteName: "group.com.cgame.shared")
+        let configuredFPS = defaults?.integer(forKey: "targetFrameRate") ?? 30
+        let targetFPS = (configuredFPS == 60) ? 60 : 30
+
+        // Decide path based on input: if compressed (H.264/HEVC) or no pixel buffer, use passthrough.
+        let subType = CMFormatDescriptionGetMediaSubType(formatDesc)
+        let hasPixelBuffer = CMSampleBufferGetImageBuffer(firstSample) != nil
+        let isCompressedInput = (subType == kCMVideoCodecType_H264 || subType == kCMVideoCodecType_HEVC) || !hasPixelBuffer
         
-        videoInput = AVAssetWriterInput(mediaType: .video, outputSettings: videoSettings)
-        videoInput?.expectsMediaDataInRealTime = true
-        
-        if let videoInput = videoInput, writer.canAdd(videoInput) {
-            writer.add(videoInput)
+        if isCompressedInput {
+            // Passthrough compressed input; create input with sourceFormatHint now
+            let input = AVAssetWriterInput(mediaType: .video, outputSettings: nil, sourceFormatHint: formatDesc)
+            input.expectsMediaDataInRealTime = true
+            input.transform = CGAffineTransform(rotationAngle: -.pi/2)
+            if writer.canAdd(input) { writer.add(input); videoInput = input }
+            compressionSession = nil
+        } else {
+            // Raw frames path:
+            // 1) Create a writer input up-front in passthrough mode (expects compressed samples)
+            //    We will feed it compressed H.264 CMSampleBuffers from VTCompressionSession
+            let upfrontInput = AVAssetWriterInput(mediaType: .video, outputSettings: nil)
+            upfrontInput.expectsMediaDataInRealTime = true
+            upfrontInput.transform = CGAffineTransform(rotationAngle: -.pi/2)
+            if writer.canAdd(upfrontInput) { writer.add(upfrontInput); videoInput = upfrontInput }
+
+            // 2) Create a VT encoder to compress CVImageBuffer -> H.264 in real time
+            var encoderSpec: CFDictionary?
+            if #available(iOSApplicationExtension 17.4, *) {
+                let spec: [NSString: Any] = [
+                    kVTVideoEncoderSpecification_RequireHardwareAcceleratedVideoEncoder: true
+                ]
+                encoderSpec = spec as CFDictionary
+            } else {
+                encoderSpec = nil
+            }
+            var session: VTCompressionSession?
+            let status = VTCompressionSessionCreate(
+                allocator: kCFAllocatorDefault,
+                width: Int32(width),
+                height: Int32(height),
+                codecType: kCMVideoCodecType_H264,
+                encoderSpecification: encoderSpec,
+                imageBufferAttributes: nil,
+                compressedDataAllocator: nil,
+                outputCallback: { refcon, _, status, infoFlags, sampleBuffer in
+                    guard status == noErr, let sampleBuffer = sampleBuffer, let refcon = refcon else { return }
+                    let unmanaged = Unmanaged<SessionBuffer>.fromOpaque(refcon)
+                    let strongSelf = unmanaged.takeUnretainedValue()
+                    if let input = strongSelf.videoInput {
+                        if input.append(sampleBuffer) {
+                            strongSelf.videoSamplesAppended += 1
+                        } else {
+                            strongSelf.videoSamplesFailed += 1
+                            let ready = input.isReadyForMoreMediaData
+                            let msg = "SessionBuffer: append(compressed) returned false (ready=\(ready) status=\(strongSelf.writer?.status.rawValue ?? -1) err=\(strongSelf.writer?.error?.localizedDescription ?? "nil"))"
+                            NSLog("❌ \(msg)")
+                            strongSelf.writeSharedLog("❌ \(msg)")
+                        }
+                    }
+                },
+                refcon: UnsafeMutableRawPointer(Unmanaged.passUnretained(self).toOpaque()),
+                compressionSessionOut: &session
+            )
+            if status != noErr {
+                NSLog("❌ SessionBuffer: VTCompressionSessionCreate error=\(status)")
+            } else if let session = session {
+                compressionSession = session
+                VTSessionSetProperty(session, key: kVTCompressionPropertyKey_RealTime, value: kCFBooleanTrue)
+                VTSessionSetProperty(session, key: kVTCompressionPropertyKey_ProfileLevel, value: kVTProfileLevel_H264_High_AutoLevel)
+                let fpsNum = NSNumber(value: targetFPS)
+                VTSessionSetProperty(session, key: kVTCompressionPropertyKey_ExpectedFrameRate, value: fpsNum)
+                let bpsNum = NSNumber(value: bitRate)
+                VTSessionSetProperty(session, key: kVTCompressionPropertyKey_AverageBitRate, value: bpsNum)
+                let keyInt = NSNumber(value: targetFPS)
+                VTSessionSetProperty(session, key: kVTCompressionPropertyKey_MaxKeyFrameInterval, value: keyInt)
+                VTSessionSetProperty(session, key: kVTCompressionPropertyKey_AllowFrameReordering, value: kCFBooleanTrue)
+                VTCompressionSessionPrepareToEncodeFrames(session)
+            }
         }
+
         
         // Setup audio input
         let audioSettings: [String: Any] = [
@@ -240,31 +454,86 @@ class SessionBuffer {
             writer.add(audioInput)
         }
         
-        // Start writing
+        // Start writing with zero-based timeline and remember base PTS
         writer.startWriting()
-        let startTime = firstSample.presentationTimeStamp
-        writer.startSession(atSourceTime: startTime)
+        let firstPTS = firstSample.presentationTimeStamp
+        if CMTIME_IS_INVALID(firstPTS) || !firstPTS.isNumeric {
+            baseVideoPTS = .zero
+        } else {
+            baseVideoPTS = firstPTS
+        }
+        writer.startSession(atSourceTime: .zero)
         
-        sessionStartCMTime = startTime
+        sessionStartCMTime = .zero
         isRecording = true
         
-        NSLog("📹 SessionBuffer: Started recording session at CMTime: \(String(format: "%.3f", startTime.seconds))s")
+        NSLog("📹 SessionBuffer: Started session basePTS=\(String(format: "%.3f", firstPTS.seconds))s zero-based timeline")
     }
     
     private func finalizeRecording(completion: @escaping () -> Void) {
-        guard let writer = writer, isRecording else {
+        // Finalize even if isRecording flipped; writer may still need finishing
+        guard let writer = writer else {
             completion()
             return
         }
         
+        // Stop accepting more data
         isRecording = false
+        videoInput?.markAsFinished()
+        audioInput?.markAsFinished()
         
+        // Flush any pending frames from VTCompressionSession
+        if let session = compressionSession {
+            VTCompressionSessionCompleteFrames(session, untilPresentationTimeStamp: .invalid)
+            VTCompressionSessionInvalidate(session)
+            compressionSession = nil
+        }
+        
+        let finishSem = DispatchSemaphore(value: 0)
         writer.finishWriting {
             let fileSize = (try? FileManager.default.attributesOfItem(atPath: self.sessionURL.path)[.size] as? UInt64) ?? 0
             let sizeInMB = Double(fileSize) / (1024 * 1024)
-            
-            NSLog("📹 SessionBuffer: Recording finalized - Size: \(String(format: "%.1f", sizeInMB))MB")
+            let status = writer.status.rawValue
+            let err = writer.error?.localizedDescription ?? "nil"
+            NSLog("📹 SessionBuffer: Recording finalized - Size: \(String(format: "%.1f", sizeInMB))MB status=\(status) error=\(err) vOK=\(self.videoSamplesAppended) vFail=\(self.videoSamplesFailed) aOK=\(self.audioSamplesAppended) aFail=\(self.audioSamplesFailed)")
+            // Mirror finalize into App Group error.log
+            if let container = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: "group.com.cgame.shared") {
+                let dir = container.appendingPathComponent("Debug", isDirectory: true)
+                try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+                let url = dir.appendingPathComponent("error.log")
+                let ts = ISO8601DateFormatter().string(from: Date())
+                let line = "[EXT] \(ts) Recording finalized size=\(String(format: "%.1f", sizeInMB))MB status=\(status) error=\(err) file=\(self.sessionURL.lastPathComponent) vOK=\(self.videoSamplesAppended) vFail=\(self.videoSamplesFailed) aOK=\(self.audioSamplesAppended) aFail=\(self.audioSamplesFailed)\n"
+                if let data = line.data(using: .utf8) {
+                    if FileManager.default.fileExists(atPath: url.path) {
+                        if let h = try? FileHandle(forWritingTo: url) { h.seekToEndOfFile(); h.write(data); try? h.close() }
+                    } else {
+                        try? data.write(to: url)
+                    }
+                }
+            }
+            // Tear down inputs and writer
+            self.videoInput = nil
+            self.audioInput = nil
+            self.writer = nil
+            finishSem.signal()
             completion()
+        }
+        // Wait up to 5s for finishWriting closure; if it doesn't arrive, log timeout to App Group log
+        if finishSem.wait(timeout: .now() + 5.0) == .timedOut {
+            if let container = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: "group.com.cgame.shared") {
+                let dir = container.appendingPathComponent("Debug", isDirectory: true)
+                try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+                let url = dir.appendingPathComponent("error.log")
+                let ts = ISO8601DateFormatter().string(from: Date())
+                let line = "[EXT] \(ts) Recording finalize timeout status=\(writer.status.rawValue) err=\(writer.error?.localizedDescription ?? "nil") file=\(self.sessionURL.lastPathComponent)\n"
+                if let data = line.data(using: .utf8) {
+                    if FileManager.default.fileExists(atPath: url.path) {
+                        if let h = try? FileHandle(forWritingTo: url) { h.seekToEndOfFile(); h.write(data); try? h.close() }
+                    } else {
+                        try? data.write(to: url)
+                    }
+                }
+            }
         }
     }
     

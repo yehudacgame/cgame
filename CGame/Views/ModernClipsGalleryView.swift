@@ -29,6 +29,23 @@ struct ModernClipsGalleryView: View {
             }
         }
         .preferredColorScheme(.dark)
+        .overlay(alignment: .bottom) {
+            if viewModel.isProcessingClips {
+                VStack(spacing: 8) {
+                    let total = max(viewModel.processingTotalCount, 1)
+                    let completed = min(viewModel.processingCompletedCount, total)
+                    let progress = Double(completed) / Double(total)
+                    ProgressView(value: progress)
+                        .progressViewStyle(LinearProgressViewStyle(tint: .gamingPrimary))
+                        .padding(.horizontal)
+                    Text("Processing clips: \(completed)/\(total)")
+                        .font(GamingFonts.caption())
+                        .foregroundColor(.gamingTextSecondary)
+                        .padding(.bottom, 8)
+                }
+                .background(Color.black.opacity(0.6))
+            }
+        }
         .sheet(item: $selectedClip) { clip in
             ClipPlayerSheet(clip: clip)
         }
